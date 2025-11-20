@@ -1,0 +1,7 @@
+.direnv/
+
+.zed/
+
+build/
+
+**/*.spv

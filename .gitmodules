@@ -1,0 +1,3 @@
+[submodule "thirdparty/odin-vk-bootstrap"]
+	path = thirdparty/odin-vk-bootstrap
+	url = git@github.com:Capati/odin-vk-bootstrap.git
