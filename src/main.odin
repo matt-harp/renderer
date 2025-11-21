@@ -26,8 +26,6 @@ Render_Data :: struct {
 	present_queue:         vk.Queue,
 	swapchain_images:      []vk.Image,
 	swapchain_image_views: []vk.ImageView,
-	// frame_buffers:         []vk.Framebuffer,
-	// render_pass:           vk.RenderPass,
 	pipeline_layout:       vk.PipelineLayout,
 	graphics_pipeline:     vk.Pipeline,
 	command_pool:          vk.CommandPool,
@@ -184,57 +182,6 @@ get_queue :: proc(s: ^State, data: ^Render_Data) -> (ok: bool) {
 	data.present_queue = vkb.device_get_queue(s.device, .Present) or_return
 	return true
 }
-
-// create_render_pass :: proc(s: ^State, data: ^Render_Data) -> (ok: bool) {
-// 	color_attachment := vk.AttachmentDescription {
-// 		format         = s.swapchain.image_format,
-// 		samples        = {._1},
-// 		loadOp         = .CLEAR,
-// 		storeOp        = .STORE,
-// 		stencilLoadOp  = .DONT_CARE,
-// 		stencilStoreOp = .DONT_CARE,
-// 		initialLayout  = .UNDEFINED,
-// 		finalLayout    = .PRESENT_SRC_KHR,
-// 	}
-
-// 	color_attachment_ref := vk.AttachmentReference {
-// 		attachment = 0,
-// 		layout     = .COLOR_ATTACHMENT_OPTIMAL,
-// 	}
-
-// 	subpass := vk.SubpassDescription {
-// 		pipelineBindPoint    = .GRAPHICS,
-// 		colorAttachmentCount = 1,
-// 		pColorAttachments    = &color_attachment_ref,
-// 	}
-
-// 	dependency := vk.SubpassDependency {
-// 		srcSubpass    = vk.SUBPASS_EXTERNAL,
-// 		dstSubpass    = 0,
-// 		srcStageMask  = {.COLOR_ATTACHMENT_OUTPUT},
-// 		srcAccessMask = {},
-// 		dstStageMask  = {.COLOR_ATTACHMENT_OUTPUT},
-// 		dstAccessMask = {.COLOR_ATTACHMENT_READ, .COLOR_ATTACHMENT_WRITE},
-// 	}
-
-// 	render_pass_info := vk.RenderPassCreateInfo {
-// 		sType           = .RENDER_PASS_CREATE_INFO,
-// 		attachmentCount = 1,
-// 		pAttachments    = &color_attachment,
-// 		subpassCount    = 1,
-// 		pSubpasses      = &subpass,
-// 		dependencyCount = 1,
-// 		pDependencies   = &dependency,
-// 	}
-
-// 	if res := vk.CreateRenderPass(s.device.handle, &render_pass_info, nil, &data.render_pass);
-// 	   res != .SUCCESS {
-// 		log.fatalf("Failed to create render pass: [%v]", res)
-// 		return
-// 	}
-
-// 	return true
-// }
 
 create_shader_module :: proc(s: ^State, code: []u8) -> (shader_module: vk.ShaderModule, ok: bool) {
 	vertex_module_info := vk.ShaderModuleCreateInfo {
@@ -421,39 +368,6 @@ create_graphics_pipeline :: proc(s: ^State, data: ^Render_Data) -> (ok: bool) {
 	return true
 }
 
-// create_framebuffers :: proc(s: ^State, data: ^Render_Data) -> (ok: bool) {
-// 	data.swapchain_images = vkb.swapchain_get_images(s.swapchain) or_return
-// 	data.swapchain_image_views = vkb.swapchain_get_image_views(s.swapchain) or_return
-
-// 	data.frame_buffers = make([]vk.Framebuffer, len(data.swapchain_image_views))
-
-// 	for v, i in data.swapchain_image_views {
-// 		attachments := []vk.ImageView{v}
-
-// 		framebuffer_info := vk.FramebufferCreateInfo {
-// 			sType           = .FRAMEBUFFER_CREATE_INFO,
-// 			renderPass      = data.render_pass,
-// 			attachmentCount = 1,
-// 			pAttachments    = raw_data(attachments),
-// 			width           = s.swapchain.extent.width,
-// 			height          = s.swapchain.extent.height,
-// 			layers          = 1,
-// 		}
-
-// 		if res := vk.CreateFramebuffer(
-// 			s.device.handle,
-// 			&framebuffer_info,
-// 			nil,
-// 			&data.frame_buffers[i],
-// 		); res != .SUCCESS {
-// 			log.fatalf("failed to create framebuffers: [%v]", res)
-// 			return
-// 		}
-// 	}
-
-// 	return true
-// }
-
 create_command_pool :: proc(s: ^State, data: ^Render_Data) -> (ok: bool) {
 	create_info := vk.CommandPoolCreateInfo {
 		sType            = .COMMAND_POOL_CREATE_INFO,
@@ -584,15 +498,6 @@ record_command_buffer :: proc(
 		colorAttachmentCount = 1,
 		pColorAttachments = &attachment_info,
 	}
-
-	// render_pass_info := vk.RenderPassBeginInfo {
-	// 	sType = .RENDER_PASS_BEGIN_INFO,
-	// 	renderPass = data.render_pass,
-	// 	framebuffer = data.frame_buffers[image_index],
-	// 	renderArea = {offset = {0, 0}, extent = s.swapchain.extent},
-	// 	clearValueCount = 1,
-	// 	pClearValues = &clear_color,
-	// }
 
 	viewport: vk.Viewport
 	viewport.x = 0.0
@@ -835,16 +740,10 @@ cleanup :: proc(s: ^State, data: ^Render_Data) {
 	vk.DestroyCommandPool(s.device.handle, data.command_pool, nil)
 
 	delete(data.command_buffers)
-
-	// for &v in data.frame_buffers {
-	// 	vk.DestroyFramebuffer(s.device.handle, v, nil)
-	// }
-	// delete(data.frame_buffers)
 	delete(data.swapchain_images)
 
 	vk.DestroyPipeline(s.device.handle, data.graphics_pipeline, nil)
 	vk.DestroyPipelineLayout(s.device.handle, data.pipeline_layout, nil)
-	// vk.DestroyRenderPass(s.device.handle, data.render_pass, nil)
 
 	vkb.swapchain_destroy_image_views(s.swapchain, data.swapchain_image_views)
 	delete(data.swapchain_image_views)
@@ -901,18 +800,14 @@ main :: proc() {
 	if !get_queue(&state, &render_data) {
 		return
 	}
-	// if !create_render_pass(&state, &render_data) {
-	// 	return
-	// }
+	
 	if !create_graphics_pipeline(&state, &render_data) {
 		return
 	}
+	
 	render_data.swapchain_images = vkb.swapchain_get_images(state.swapchain)
 	render_data.swapchain_image_views = vkb.swapchain_get_image_views(state.swapchain)
-	// if !create_framebuffers(&state, &render_data) {
-	// 	return
-	// }
-	//
+	
 	if !create_command_pool(&state, &render_data) {
 		return
 	}
