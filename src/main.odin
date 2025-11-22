@@ -1,5 +1,6 @@
 package main
 
+import "base:builtin"
 import "base:runtime"
 // Packages
 import "core:fmt"
@@ -22,18 +23,19 @@ State :: struct {
 }
 
 Render_Data :: struct {
-	graphics_queue:        vk.Queue,
-	present_queue:         vk.Queue,
-	swapchain_images:      []vk.Image,
-	swapchain_image_views: []vk.ImageView,
-	pipeline_layout:       vk.PipelineLayout,
-	graphics_pipeline:     vk.Pipeline,
-	command_pool:          vk.CommandPool,
-	command_buffers:       []vk.CommandBuffer,
-	ready_for_present_semaphores:  []vk.Semaphore,
-	image_acquired_semaphores:   [MAX_FRAMES_IN_FLIGHT]vk.Semaphore,
-	in_flight_fences:      [MAX_FRAMES_IN_FLIGHT]vk.Fence,
-	current_frame:         uint,
+	graphics_queue:               vk.Queue,
+	present_queue:                vk.Queue,
+	swapchain_images:             []vk.Image,
+	swapchain_image_views:        []vk.ImageView,
+	pipeline_layout:              vk.PipelineLayout,
+	graphics_pipeline:            vk.Pipeline,
+	command_pool:                 vk.CommandPool,
+	command_buffers:              []vk.CommandBuffer,
+	vertex_buffer:                vk.Buffer,
+	ready_for_present_semaphores: []vk.Semaphore,
+	image_acquired_semaphores:    [MAX_FRAMES_IN_FLIGHT]vk.Semaphore,
+	in_flight_fences:             [MAX_FRAMES_IN_FLIGHT]vk.Fence,
+	current_frame:                uint,
 }
 
 MAX_FRAMES_IN_FLIGHT :: 2
@@ -232,10 +234,10 @@ create_graphics_pipeline :: proc(s: ^State, data: ^Render_Data) -> (ok: bool) {
 	// State for vertex input
 	vertex_input_info := vk.PipelineVertexInputStateCreateInfo {
 		sType                           = .PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-		vertexBindingDescriptionCount   = 0,
-		pVertexBindingDescriptions      = nil,
-		vertexAttributeDescriptionCount = 0,
-		pVertexAttributeDescriptions    = nil,
+		vertexBindingDescriptionCount   = 1,
+		pVertexBindingDescriptions      = &vert_binding_desc,
+		vertexAttributeDescriptionCount = u32(len(vert_attr_desc)),
+		pVertexAttributeDescriptions    = raw_data(vert_attr_desc),
 	}
 
 	// State for assembly
@@ -409,6 +411,23 @@ create_command_buffers :: proc(s: ^State, data: ^Render_Data) -> (ok: bool) {
 	return true
 }
 
+create_vert_buffer :: proc(s: ^State, data: ^Render_Data) -> (ok: bool) {
+	buffer_info := vk.BufferCreateInfo {
+		sType       = .BUFFER_CREATE_INFO,
+		flags       = {},
+		size        = vk.DeviceSize(size_of(vertices[0]) * len(vertices)),
+		usage       = {.VERTEX_BUFFER},
+		sharingMode = .EXCLUSIVE,
+	}
+	if res := vk.CreateBuffer(s.device.handle, &buffer_info, nil, &data.vertex_buffer);
+	   res != .SUCCESS {
+		log.fatalf("Failed to create vertex buffer: [%v]", res)
+		return
+	}
+
+	return true
+}
+
 transition_image_layout :: proc(
 	data: ^Render_Data,
 	buffer: vk.CommandBuffer,
@@ -555,7 +574,7 @@ create_sync_objects :: proc(s: ^State, data: ^Render_Data) -> (ok: bool) {
 		sType = .FENCE_CREATE_INFO,
 		flags = {.SIGNALED},
 	}
-	
+
 	for i in 0 ..< len(data.swapchain_images) {
 		if res := vk.CreateSemaphore(
 			s.device.handle,
@@ -650,32 +669,32 @@ draw_frame :: proc(s: ^State, data: ^Render_Data) -> (ok: bool) {
 
 	vk.ResetCommandBuffer(data.command_buffers[data.current_frame], {})
 	record_command_buffer(s, data, data.command_buffers[data.current_frame], image_index)
-	
+
 	wait_info := vk.SemaphoreSubmitInfo {
-		sType = .SEMAPHORE_SUBMIT_INFO,
+		sType     = .SEMAPHORE_SUBMIT_INFO,
 		semaphore = data.image_acquired_semaphores[data.current_frame],
 		stageMask = {.COLOR_ATTACHMENT_OUTPUT},
 	}
-	
+
 	cmd_info := vk.CommandBufferSubmitInfo {
-		sType = .COMMAND_BUFFER_SUBMIT_INFO,
+		sType         = .COMMAND_BUFFER_SUBMIT_INFO,
 		commandBuffer = data.command_buffers[data.current_frame],
 	}
-	
+
 	signal_info := vk.SemaphoreSubmitInfo {
-		sType = .SEMAPHORE_SUBMIT_INFO,
+		sType     = .SEMAPHORE_SUBMIT_INFO,
 		semaphore = data.ready_for_present_semaphores[image_index],
 		stageMask = {.ALL_COMMANDS},
 	}
 
 	submit_info := vk.SubmitInfo2 {
-		sType = .SUBMIT_INFO_2,
-		waitSemaphoreInfoCount = 1,
-		pWaitSemaphoreInfos = &wait_info,
-		commandBufferInfoCount = 1,
-		pCommandBufferInfos = &cmd_info,
+		sType                    = .SUBMIT_INFO_2,
+		waitSemaphoreInfoCount   = 1,
+		pWaitSemaphoreInfos      = &wait_info,
+		commandBufferInfoCount   = 1,
+		pCommandBufferInfos      = &cmd_info,
 		signalSemaphoreInfoCount = 1,
-		pSignalSemaphoreInfos = &signal_info,
+		pSignalSemaphoreInfos    = &signal_info,
 	}
 
 	if res := vk.QueueSubmit2(
@@ -757,6 +776,33 @@ cleanup :: proc(s: ^State, data: ^Render_Data) {
 	destroy_window_sdl(s.window)
 }
 
+Vertex :: struct {
+	pos:   [2]f32,
+	color: [3]f32,
+}
+
+vert_binding_desc := vk.VertexInputBindingDescription {
+	binding   = 0,
+	stride    = size_of(Vertex),
+	inputRate = .VERTEX,
+}
+
+vert_attr_desc := []vk.VertexInputAttributeDescription {
+	{binding = 0, location = 0, format = .R32G32_SFLOAT, offset = u32(offset_of(Vertex, pos))},
+	{
+		binding = 1,
+		location = 0,
+		format = .R32G32B32_SFLOAT,
+		offset = u32(offset_of(Vertex, color)),
+	},
+}
+
+vertices :: []Vertex {
+	{{0.0, -0.5}, {1.0, 0.0, 0.0}},
+	{{0.5, 0.5}, {0.0, 1.0, 0.0}},
+	{{-0.5, 0.5}, {0.0, 0.0, 1.0}},
+}
+
 main :: proc() {
 	when ODIN_DEBUG {
 		logger := log.create_console_logger(opt = {.Level, .Terminal_Color})
@@ -800,14 +846,14 @@ main :: proc() {
 	if !get_queue(&state, &render_data) {
 		return
 	}
-	
+
 	if !create_graphics_pipeline(&state, &render_data) {
 		return
 	}
-	
+
 	render_data.swapchain_images = vkb.swapchain_get_images(state.swapchain)
 	render_data.swapchain_image_views = vkb.swapchain_get_image_views(state.swapchain)
-	
+
 	if !create_command_pool(&state, &render_data) {
 		return
 	}
@@ -834,3 +880,4 @@ main :: proc() {
 
 	log.info("Exiting...")
 }
+
