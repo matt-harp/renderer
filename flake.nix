@@ -26,6 +26,8 @@
               shader-slang
               glfw
               nixd
+              premake5
+              libcxx
 
               renderdoc
 

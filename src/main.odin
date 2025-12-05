@@ -11,6 +11,7 @@ import vk "vendor:vulkan"
 
 // Local packages
 import vkb "../thirdparty/odin-vk-bootstrap/vkb"
+import vma "../thirdparty/odin-vma"
 
 State :: struct {
 	window:          glfw.WindowHandle,
@@ -19,6 +20,7 @@ State :: struct {
 	physical_device: ^vkb.Physical_Device,
 	device:          ^vkb.Device,
 	swapchain:       ^vkb.Swapchain,
+	allocator:       vma.Allocator,
 	is_minimized:    bool,
 }
 
@@ -32,6 +34,7 @@ Render_Data :: struct {
 	command_pool:                 vk.CommandPool,
 	command_buffers:              []vk.CommandBuffer,
 	vertex_buffer:                vk.Buffer,
+	vertex_allocation:            vma.Allocation,
 	ready_for_present_semaphores: []vk.Semaphore,
 	image_acquired_semaphores:    [MAX_FRAMES_IN_FLIGHT]vk.Semaphore,
 	in_flight_fences:             [MAX_FRAMES_IN_FLIGHT]vk.Fence,
@@ -145,6 +148,13 @@ device_initialization :: proc(s: ^State) -> (ok: bool) {
 		shaderDrawParameters = true,
 	}
 	vkb.device_builder_add_p_next(&device_builder, &vk11)
+
+	// vulkan 1.2 features
+	vk12 := vk.PhysicalDeviceVulkan12Features {
+		sType               = .PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+		bufferDeviceAddress = true,
+	}
+	vkb.device_builder_add_p_next(&device_builder, &vk12)
 
 	// vulkan 1.3 features
 	vk13 := vk.PhysicalDeviceVulkan13Features {
@@ -415,15 +425,31 @@ create_vert_buffer :: proc(s: ^State, data: ^Render_Data) -> (ok: bool) {
 	buffer_info := vk.BufferCreateInfo {
 		sType       = .BUFFER_CREATE_INFO,
 		flags       = {},
-		size        = vk.DeviceSize(size_of(vertices[0]) * len(vertices)),
+		size        = vk.DeviceSize(size_of(Vertex) * len(vertices)),
 		usage       = {.VERTEX_BUFFER},
 		sharingMode = .EXCLUSIVE,
 	}
-	if res := vk.CreateBuffer(s.device.handle, &buffer_info, nil, &data.vertex_buffer);
-	   res != .SUCCESS {
-		log.fatalf("Failed to create vertex buffer: [%v]", res)
-		return
+
+	alloc_create_info := vma.Allocation_Create_Info {
+		usage = .Auto,
+		flags = {.Host_Access_Sequential_Write, .Mapped},
 	}
+
+	alloc_info: vma.Allocation_Info
+	if res := vma.create_buffer(
+		s.allocator,
+		buffer_info,
+		alloc_create_info,
+		&data.vertex_buffer,
+		&data.vertex_allocation,
+		&alloc_info,
+	); res != .SUCCESS {
+		log.errorf("Error allocating buffer %v", res)
+		return false
+	}
+	vma.set_allocation_name(s.allocator, data.vertex_allocation, "Vertex Buffer")
+
+	mem.copy(alloc_info.mapped_data, raw_data(vertices), size_of(Vertex) * len(vertices))
 
 	return true
 }
@@ -534,6 +560,8 @@ record_command_buffer :: proc(
 	// vk.CmdBeginRenderPass(buffer, &render_pass_info, .INLINE)
 
 	vk.CmdBindPipeline(buffer, .GRAPHICS, data.graphics_pipeline)
+	offset := vk.DeviceSize(0)
+	vk.CmdBindVertexBuffers(buffer, 0, 1, &data.vertex_buffer, &offset)
 
 	vk.CmdSetViewport(buffer, 0, 1, &viewport)
 	vk.CmdSetScissor(buffer, 0, 1, &scissor)
@@ -739,6 +767,9 @@ draw_frame :: proc(s: ^State, data: ^Render_Data) -> (ok: bool) {
 cleanup :: proc(s: ^State, data: ^Render_Data) {
 	vk.DeviceWaitIdle(s.device.handle)
 
+	vma.destroy_buffer(s.allocator, data.vertex_buffer, data.vertex_allocation)
+	vma.destroy_allocator(s.allocator)
+
 	for i in 0 ..< len(data.swapchain_images) {
 		vk.DestroySemaphore(s.device.handle, data.ready_for_present_semaphores[i], nil)
 	}
@@ -790,8 +821,8 @@ vert_binding_desc := vk.VertexInputBindingDescription {
 vert_attr_desc := []vk.VertexInputAttributeDescription {
 	{binding = 0, location = 0, format = .R32G32_SFLOAT, offset = u32(offset_of(Vertex, pos))},
 	{
-		binding = 1,
-		location = 0,
+		binding = 0,
+		location = 1,
 		format = .R32G32B32_SFLOAT,
 		offset = u32(offset_of(Vertex, color)),
 	},
@@ -864,6 +895,23 @@ main :: proc() {
 		return
 	}
 
+	vma_vulkan_functions := vma.create_vulkan_functions()
+	allocator_create_info := vma.Allocator_Create_Info {
+		flags              = {.Buffer_Device_Address},
+		instance           = state.instance.handle,
+		vulkan_api_version = MINIMUM_API_VERSION,
+		physical_device    = state.physical_device.handle,
+		device             = state.device.handle,
+		vulkan_functions   = &vma_vulkan_functions,
+	}
+	if res := vma.create_allocator(allocator_create_info, &state.allocator); res != .SUCCESS {
+		log.errorf("Failed to create Vulkan Memory Allocator: [%v]", res)
+		return
+	}
+	if !create_vert_buffer(&state, &render_data) {
+		return
+	}
+
 	// perf_count := sdl.GetPerformanceFrequency()
 	// prev_frame := sdl.GetPerformanceCounter()
 	main_loop: for !glfw.WindowShouldClose(state.window) {
@@ -880,4 +928,3 @@ main :: proc() {
 
 	log.info("Exiting...")
 }
-

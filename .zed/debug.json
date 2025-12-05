@@ -1,0 +1,24 @@
+// Project-local debug tasks
+//
+// For more documentation on how to configure debug tasks,
+// see: https://zed.dev/docs/debugger
+[
+	{
+		"adapter": "CodeLLDB",
+		"label": "Debug Odin Executable",
+		"program": "build/engine.exe",
+		"args": [],
+		"cwd": "$ZED_WORKTREE_ROOT",
+		"request": "launch",
+		"stopAtEntry": false
+	},
+	{
+		"adapter": "CodeLLDB",
+		"label": "Debug Odin Executable linux",
+		"program": "build/engine",
+		"args": [],
+		"cwd": "$ZED_WORKTREE_ROOT",
+		"request": "launch",
+		"stopAtEntry": false
+	}
+]
