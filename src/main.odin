@@ -1,11 +1,11 @@
 package main
 
 import "base:builtin"
-import "base:runtime"
-// Packages
 import "core:fmt"
 import "core:log"
 import "core:mem"
+import "gfx"
+
 import glfw "vendor:glfw"
 import vk "vendor:vulkan"
 
@@ -25,13 +25,15 @@ State :: struct {
 }
 
 Render_Data :: struct {
+	transfer_queue:               vk.Queue,
 	graphics_queue:               vk.Queue,
 	present_queue:                vk.Queue,
 	swapchain_images:             []vk.Image,
 	swapchain_image_views:        []vk.ImageView,
 	pipeline_layout:              vk.PipelineLayout,
 	graphics_pipeline:            vk.Pipeline,
-	command_pool:                 vk.CommandPool,
+	graphics_command_pool:        vk.CommandPool,
+	transfer_command_pool:        vk.CommandPool,
 	command_buffers:              []vk.CommandBuffer,
 	vertex_buffer:                vk.Buffer,
 	vertex_allocation:            vma.Allocation,
@@ -41,53 +43,18 @@ Render_Data :: struct {
 	current_frame:                uint,
 }
 
+Push_Constants :: struct {
+	vertex_buffer_addr: vk.DeviceAddress,
+}
+
 MAX_FRAMES_IN_FLIGHT :: 2
 MINIMUM_API_VERSION :: vk.API_VERSION_1_3
 
-glfw_error :: proc "c" (error: i32, description: cstring) {
-	context = runtime.default_context()
-	fmt.println(description, error)
-}
-create_window_sdl :: proc(
-	window_title: cstring,
-	resize := true,
-) -> (
-	window: glfw.WindowHandle,
-	ok: bool,
-) {
-	glfw.SetErrorCallback(glfw_error)
-	if !glfw.Init() {
-		return
-	}
-	defer if !ok {
-		glfw.Terminate()
-	}
-
-	glfw.WindowHint(glfw.CLIENT_API, glfw.NO_API)
-
-	if !resize {
-		glfw.WindowHint(glfw.RESIZABLE, glfw.FALSE)
-	}
-
-	window = glfw.CreateWindow(800, 600, window_title, nil, nil)
-	if window == nil {
-		log.errorf("Failed to create a GLFW window")
-		return
-	}
-
-	return window, true
-}
-
-destroy_window_sdl :: proc(window: glfw.WindowHandle) {
-	glfw.DestroyWindow(window)
-	glfw.Terminate()
-}
-
 device_initialization :: proc(s: ^State) -> (ok: bool) {
 	// Window
-	s.window = create_window_sdl("Vulkan Triangle", false) or_return
+	s.window = gfx.create_glfw_window("Vulkan Triangle", false) or_return
 	defer if !ok {
-		destroy_window_sdl(s.window)
+		gfx.destroy_glfw_window(s.window)
 	}
 
 	// Instance
@@ -153,6 +120,12 @@ device_initialization :: proc(s: ^State) -> (ok: bool) {
 	vk12 := vk.PhysicalDeviceVulkan12Features {
 		sType               = .PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
 		bufferDeviceAddress = true,
+		// descriptorIndexing                           = true,
+		// shaderSampledImageArrayNonUniformIndexing    = true,
+		// runtimeDescriptorArray                       = true,
+		// descriptorBindingVariableDescriptorCount     = true,
+		// descriptorBindingPartiallyBound              = true,
+		// descriptorBindingSampledImageUpdateAfterBind = true,
 	}
 	vkb.device_builder_add_p_next(&device_builder, &vk12)
 
@@ -190,6 +163,7 @@ create_swapchain :: proc(s: ^State, width, height: u32) -> (ok: bool) {
 }
 
 get_queue :: proc(s: ^State, data: ^Render_Data) -> (ok: bool) {
+	data.transfer_queue = vkb.device_get_queue(s.device, .Transfer) or_return
 	data.graphics_queue = vkb.device_get_queue(s.device, .Graphics) or_return
 	data.present_queue = vkb.device_get_queue(s.device, .Present) or_return
 	return true
@@ -241,13 +215,13 @@ create_graphics_pipeline :: proc(s: ^State, data: ^Render_Data) -> (ok: bool) {
 		pDynamicStates    = raw_data(dynamic_states),
 	}
 
-	// State for vertex input
+	// State for vertex input, empty for aura
 	vertex_input_info := vk.PipelineVertexInputStateCreateInfo {
-		sType                           = .PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-		vertexBindingDescriptionCount   = 1,
-		pVertexBindingDescriptions      = &vert_binding_desc,
-		vertexAttributeDescriptionCount = u32(len(vert_attr_desc)),
-		pVertexAttributeDescriptions    = raw_data(vert_attr_desc),
+		sType = .PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+		// vertexBindingDescriptionCount   = 0,
+		// pVertexBindingDescriptions      = nil,
+		// vertexAttributeDescriptionCount = u32(len(vert_attr_desc)),
+		// pVertexAttributeDescriptions    = raw_data(vert_attr_desc),
 	}
 
 	// State for assembly
@@ -325,12 +299,18 @@ create_graphics_pipeline :: proc(s: ^State, data: ^Render_Data) -> (ok: bool) {
 	}
 
 	// Pipeline layout
+	pc_range := vk.PushConstantRange {
+		stageFlags = {.VERTEX},
+		offset     = 0,
+		size       = size_of(Push_Constants),
+	}
+
 	pipeline_layout_info := vk.PipelineLayoutCreateInfo {
 		sType                  = .PIPELINE_LAYOUT_CREATE_INFO,
-		setLayoutCount         = 0,
-		pSetLayouts            = nil,
-		pushConstantRangeCount = 0,
-		pPushConstantRanges    = nil,
+		// setLayoutCount         = 0,
+		// pSetLayouts            = nil,
+		pushConstantRangeCount = 1,
+		pPushConstantRanges    = &pc_range,
 	}
 
 	if res := vk.CreatePipelineLayout(
@@ -381,15 +361,35 @@ create_graphics_pipeline :: proc(s: ^State, data: ^Render_Data) -> (ok: bool) {
 }
 
 create_command_pool :: proc(s: ^State, data: ^Render_Data) -> (ok: bool) {
-	create_info := vk.CommandPoolCreateInfo {
+	create_info_graphics := vk.CommandPoolCreateInfo {
 		sType            = .COMMAND_POOL_CREATE_INFO,
 		flags            = {.RESET_COMMAND_BUFFER},
 		queueFamilyIndex = vkb.device_get_queue_index(s.device, .Graphics) or_return,
 	}
 
-	if res := vk.CreateCommandPool(s.device.handle, &create_info, nil, &data.command_pool);
-	   res != .SUCCESS {
-		log.fatalf("Failed to create command pool: [%v]", res)
+	if res := vk.CreateCommandPool(
+		s.device.handle,
+		&create_info_graphics,
+		nil,
+		&data.graphics_command_pool,
+	); res != .SUCCESS {
+		log.fatalf("Failed to create graphics command pool: [%v]", res)
+		return
+	}
+
+	create_info_transfer := vk.CommandPoolCreateInfo {
+		sType            = .COMMAND_POOL_CREATE_INFO,
+		flags            = {.RESET_COMMAND_BUFFER},
+		queueFamilyIndex = vkb.device_get_queue_index(s.device, .Transfer) or_return,
+	}
+
+	if res := vk.CreateCommandPool(
+		s.device.handle,
+		&create_info_transfer,
+		nil,
+		&data.transfer_command_pool,
+	); res != .SUCCESS {
+		log.fatalf("Failed to create transfer command pool: [%v]", res)
 		return
 	}
 
@@ -404,7 +404,7 @@ create_command_buffers :: proc(s: ^State, data: ^Render_Data) -> (ok: bool) {
 
 	allocate_info := vk.CommandBufferAllocateInfo {
 		sType              = .COMMAND_BUFFER_ALLOCATE_INFO,
-		commandPool        = data.command_pool,
+		commandPool        = data.graphics_command_pool,
 		level              = .PRIMARY,
 		commandBufferCount = u32(len(data.command_buffers)),
 	}
@@ -422,12 +422,18 @@ create_command_buffers :: proc(s: ^State, data: ^Render_Data) -> (ok: bool) {
 }
 
 create_vert_buffer :: proc(s: ^State, data: ^Render_Data) -> (ok: bool) {
+	indices := []u32 {
+		vkb.device_get_queue_index(s.device, .Graphics),
+		vkb.device_get_queue_index(s.device, .Transfer),
+	}
 	buffer_info := vk.BufferCreateInfo {
-		sType       = .BUFFER_CREATE_INFO,
-		flags       = {},
-		size        = vk.DeviceSize(size_of(Vertex) * len(vertices)),
-		usage       = {.VERTEX_BUFFER},
-		sharingMode = .EXCLUSIVE,
+		sType                 = .BUFFER_CREATE_INFO,
+		flags                 = {},
+		size                  = vk.DeviceSize(size_of(Vertex) * len(vertices)),
+		usage                 = {.VERTEX_BUFFER, .SHADER_DEVICE_ADDRESS},
+		sharingMode           = .CONCURRENT,
+		queueFamilyIndexCount = u32(len(indices)),
+		pQueueFamilyIndices   = raw_data(indices),
 	}
 
 	alloc_create_info := vma.Allocation_Create_Info {
@@ -557,11 +563,18 @@ record_command_buffer :: proc(
 	scissor.extent = s.swapchain.extent
 
 	vk.CmdBeginRendering(buffer, &rendering_info)
-	// vk.CmdBeginRenderPass(buffer, &render_pass_info, .INLINE)
 
 	vk.CmdBindPipeline(buffer, .GRAPHICS, data.graphics_pipeline)
-	offset := vk.DeviceSize(0)
-	vk.CmdBindVertexBuffers(buffer, 0, 1, &data.vertex_buffer, &offset)
+
+	bdai := vk.BufferDeviceAddressInfo {
+		sType  = .BUFFER_DEVICE_ADDRESS_INFO,
+		buffer = data.vertex_buffer,
+	}
+	buffer_addr := vk.GetBufferDeviceAddress(s.device.handle, &bdai)
+	pc := Push_Constants {
+		vertex_buffer_addr = buffer_addr,
+	}
+	vk.CmdPushConstants(buffer, data.pipeline_layout, {.VERTEX}, 0, size_of(Push_Constants), &pc)
 
 	vk.CmdSetViewport(buffer, 0, 1, &viewport)
 	vk.CmdSetScissor(buffer, 0, 1, &scissor)
@@ -641,7 +654,8 @@ recreate_swapchain :: proc(s: ^State, data: ^Render_Data) -> (ok: bool) {
 
 	vk.DeviceWaitIdle(s.device.handle)
 
-	vk.DestroyCommandPool(s.device.handle, data.command_pool, nil)
+	// vk.DestroyCommandPool(s.device.handle, data.graphics_command_pool, nil)
+	// vk.DestroyCommandPool(s.device.handle, data.transfer_command_pool, nil)
 
 	delete(data.command_buffers)
 
@@ -782,12 +796,13 @@ cleanup :: proc(s: ^State, data: ^Render_Data) {
 
 	vk.FreeCommandBuffers(
 		s.device.handle,
-		data.command_pool,
+		data.graphics_command_pool,
 		u32(len(data.command_buffers)),
 		raw_data(data.command_buffers),
 	)
 
-	vk.DestroyCommandPool(s.device.handle, data.command_pool, nil)
+	vk.DestroyCommandPool(s.device.handle, data.graphics_command_pool, nil)
+	vk.DestroyCommandPool(s.device.handle, data.transfer_command_pool, nil)
 
 	delete(data.command_buffers)
 	delete(data.swapchain_images)
@@ -804,11 +819,12 @@ cleanup :: proc(s: ^State, data: ^Render_Data) {
 	vkb.destroy_surface(s.instance, s.surface)
 	vkb.destroy_instance(s.instance)
 
-	destroy_window_sdl(s.window)
+	gfx.destroy_glfw_window(s.window)
 }
 
 Vertex :: struct {
 	pos:   [2]f32,
+	_:     [8]u8,
 	color: [3]f32,
 }
 
@@ -829,9 +845,9 @@ vert_attr_desc := []vk.VertexInputAttributeDescription {
 }
 
 vertices :: []Vertex {
-	{{0.0, -0.5}, {1.0, 0.0, 0.0}},
-	{{0.5, 0.5}, {0.0, 1.0, 0.0}},
-	{{-0.5, 0.5}, {0.0, 0.0, 1.0}},
+	{pos = {0.0, -0.5}, color = {1.0, 0.0, 0.0}},
+	{pos = {0.5, 0.5}, color = {0.0, 1.0, 0.0}},
+	{pos = {-0.5, 0.5}, color = {0.0, 0.0, 1.0}},
 }
 
 main :: proc() {

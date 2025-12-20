@@ -1,7 +1,14 @@
-struct VSInput {
+struct Vertex {
   float2 inPosition;
+  float2 _padding;
   float3 inColor;
 };
+
+struct PushConstants {
+	Vertex* buffer;
+}
+
+[[push_constant]] ConstantBuffer<PushConstants> pc;
 
 struct VSOutput {
   float4 pos : SV_Position;
@@ -9,10 +16,14 @@ struct VSOutput {
 };
 
 [shader("vertex")]
-VSOutput vertMain(VSInput input) {
+VSOutput vertMain(uint vertexID: SV_VertexID) {
   VSOutput output;
-  output.pos = float4(input.inPosition, 0.0, 1.0);
-  output.color = input.inColor;
+
+  Vertex v = pc.buffer[vertexID];
+
+  output.pos = float4(v.inPosition, 0.0, 1.0);
+  output.color = v.inColor;
+
   return output;
 }
 
