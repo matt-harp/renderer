@@ -36,7 +36,9 @@ Render_Data :: struct {
 	transfer_command_pool:        vk.CommandPool,
 	command_buffers:              []vk.CommandBuffer,
 	vertex_buffer:                vk.Buffer,
+	index_buffer:                vk.Buffer,
 	vertex_allocation:            vma.Allocation,
+	index_allocation:             vma.Allocation,
 	ready_for_present_semaphores: []vk.Semaphore,
 	image_acquired_semaphores:    [MAX_FRAMES_IN_FLIGHT]vk.Semaphore,
 	in_flight_fences:             [MAX_FRAMES_IN_FLIGHT]vk.Fence,
@@ -45,6 +47,7 @@ Render_Data :: struct {
 
 Push_Constants :: struct {
 	vertex_buffer_addr: vk.DeviceAddress,
+	index_buffer_addr: vk.DeviceAddress,
 }
 
 MAX_FRAMES_IN_FLIGHT :: 2
@@ -65,6 +68,9 @@ device_initialization :: proc(s: ^State) -> (ok: bool) {
 	when ODIN_DEBUG {
 		vkb.instance_enable_validation_layers(&instance_builder)
 		vkb.instance_use_default_debug_messenger(&instance_builder)
+		vkb.instance_add_debug_messenger_severity(&instance_builder, {.INFO}) // for printf debugging
+
+		vkb.instance_add_validation_feature_enable(&instance_builder, .DEBUG_PRINTF)
 
 		VK_LAYER_LUNARG_MONITOR :: "VK_LAYER_LUNARG_monitor"
 
@@ -103,6 +109,10 @@ device_initialization :: proc(s: ^State) -> (ok: bool) {
 	s.physical_device = vkb.select_physical_device(&selector) or_return
 	defer if !ok {
 		vkb.destroy_physical_device(s.physical_device)
+	}
+
+	when ODIN_DEBUG {
+		vkb.physical_device_enable_extension_if_present(s.physical_device, "VK_KHR_shader_non_semantic_info")
 	}
 
 	// Device
@@ -460,6 +470,45 @@ create_vert_buffer :: proc(s: ^State, data: ^Render_Data) -> (ok: bool) {
 	return true
 }
 
+create_index_buffer :: proc(s: ^State, data: ^Render_Data) -> (ok: bool) {
+	qindices := []u32 {
+		vkb.device_get_queue_index(s.device, .Graphics),
+		vkb.device_get_queue_index(s.device, .Transfer),
+	}
+	buffer_info := vk.BufferCreateInfo {
+		sType                 = .BUFFER_CREATE_INFO,
+		flags                 = {},
+		size                  = vk.DeviceSize(size_of(u32) * len(indices)),
+		usage                 = {.INDEX_BUFFER, .SHADER_DEVICE_ADDRESS},
+		sharingMode           = .CONCURRENT,
+		queueFamilyIndexCount = u32(len(qindices)),
+		pQueueFamilyIndices   = raw_data(qindices),
+	}
+
+	alloc_create_info := vma.Allocation_Create_Info {
+		usage = .Auto,
+		flags = {.Host_Access_Sequential_Write, .Mapped},
+	}
+
+	alloc_info: vma.Allocation_Info
+	if res := vma.create_buffer(
+		s.allocator,
+		buffer_info,
+		alloc_create_info,
+		&data.index_buffer,
+		&data.index_allocation,
+		&alloc_info,
+	); res != .SUCCESS {
+		log.errorf("Error allocating buffer %v", res)
+		return false
+	}
+	vma.set_allocation_name(s.allocator, data.index_allocation, "Index Buffer")
+
+	mem.copy(alloc_info.mapped_data, raw_data(indices), size_of(u32) * len(indices))
+
+	return true
+}
+
 transition_image_layout :: proc(
 	data: ^Render_Data,
 	buffer: vk.CommandBuffer,
@@ -530,7 +579,7 @@ record_command_buffer :: proc(
 	)
 
 	clear_color := vk.ClearValue {
-		color = {float32 = {0.0, 0.0, 0.0, 1.0}},
+		color = {float32 = {0.1, 0.12, 0.32, 1.0}},
 	}
 
 	attachment_info := vk.RenderingAttachmentInfo {
@@ -571,15 +620,22 @@ record_command_buffer :: proc(
 		buffer = data.vertex_buffer,
 	}
 	buffer_addr := vk.GetBufferDeviceAddress(s.device.handle, &bdai)
+	bdai2 := vk.BufferDeviceAddressInfo {
+		sType = .BUFFER_DEVICE_ADDRESS_INFO,
+		buffer = data.index_buffer,
+	}
+	index_buffer_addr := vk.GetBufferDeviceAddress(s.device.handle, &bdai2)
+
 	pc := Push_Constants {
 		vertex_buffer_addr = buffer_addr,
+		index_buffer_addr = index_buffer_addr,
 	}
 	vk.CmdPushConstants(buffer, data.pipeline_layout, {.VERTEX}, 0, size_of(Push_Constants), &pc)
 
 	vk.CmdSetViewport(buffer, 0, 1, &viewport)
 	vk.CmdSetScissor(buffer, 0, 1, &scissor)
 
-	vk.CmdDraw(buffer, 3, 1, 0, 0)
+	vk.CmdDraw(buffer, u32(len(indices)), 1, 0, 0)
 
 	vk.CmdEndRendering(buffer)
 	// vk.CmdEndRenderPass(buffer)
@@ -782,6 +838,7 @@ cleanup :: proc(s: ^State, data: ^Render_Data) {
 	vk.DeviceWaitIdle(s.device.handle)
 
 	vma.destroy_buffer(s.allocator, data.vertex_buffer, data.vertex_allocation)
+	vma.destroy_buffer(s.allocator, data.index_buffer, data.index_allocation)
 	vma.destroy_allocator(s.allocator)
 
 	for i in 0 ..< len(data.swapchain_images) {
@@ -845,9 +902,14 @@ vert_attr_desc := []vk.VertexInputAttributeDescription {
 }
 
 vertices :: []Vertex {
-	{pos = {0.0, -0.5}, color = {1.0, 0.0, 0.0}},
-	{pos = {0.5, 0.5}, color = {0.0, 1.0, 0.0}},
-	{pos = {-0.5, 0.5}, color = {0.0, 0.0, 1.0}},
+	{pos = {-0.5, -0.5}, color = {1.0, 0.0, 0.0}},
+	{pos = {+0.5, -0.5}, color = {0.0, 1.0, 0.0}},
+	{pos = {+0.5, +0.5}, color = {0.0, 0.0, 1.0}},
+	{pos = {-0.5, +0.5}, color = {1.0, 1.0, 1.0}},
+}
+
+indices :: []u32 {
+	0, 1, 2, 2, 3, 0,
 }
 
 main :: proc() {
@@ -925,6 +987,9 @@ main :: proc() {
 		return
 	}
 	if !create_vert_buffer(&state, &render_data) {
+		return
+	}
+	if !create_index_buffer(&state, &render_data) {
 		return
 	}
 
