@@ -1,10 +1,10 @@
 struct Vertex {
   float2 inPosition;
-  float2 _padding;
   float3 inColor;
 };
 
 struct PushConstants {
+  float4x4 mvp;
   Vertex *buffer;
   uint *indices;
 }
@@ -24,8 +24,9 @@ VSOutput vertMain(uint vertexID: SV_VertexID) {
   uint index = pc.indices[vertexID];
   Vertex v = pc.buffer[index];
 
-  output.pos = float4(v.inPosition, 0.0, 1.0);
-  printf("%d", index);
+  float4 localPos = float4(v.inPosition, 0.0, 1.0);
+  output.pos = mul(pc.mvp, localPos);
+  printf("z = %f", output.pos.z);
   output.color = v.inColor;
 
   return output;

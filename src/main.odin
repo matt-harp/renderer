@@ -3,6 +3,8 @@ package main
 import "base:builtin"
 import "core:fmt"
 import "core:log"
+import "core:math"
+import "core:math/linalg"
 import "core:mem"
 import "gfx"
 
@@ -36,18 +38,20 @@ Render_Data :: struct {
 	transfer_command_pool:        vk.CommandPool,
 	command_buffers:              []vk.CommandBuffer,
 	vertex_buffer:                vk.Buffer,
-	index_buffer:                vk.Buffer,
+	index_buffer:                 vk.Buffer,
 	vertex_allocation:            vma.Allocation,
 	index_allocation:             vma.Allocation,
 	ready_for_present_semaphores: []vk.Semaphore,
 	image_acquired_semaphores:    [MAX_FRAMES_IN_FLIGHT]vk.Semaphore,
 	in_flight_fences:             [MAX_FRAMES_IN_FLIGHT]vk.Fence,
 	current_frame:                uint,
+	mvp:                          matrix[4, 4]f32,
 }
 
 Push_Constants :: struct {
+	mvp:                linalg.Matrix4f32,
 	vertex_buffer_addr: vk.DeviceAddress,
-	index_buffer_addr: vk.DeviceAddress,
+	index_buffer_addr:  vk.DeviceAddress,
 }
 
 MAX_FRAMES_IN_FLIGHT :: 2
@@ -68,9 +72,10 @@ device_initialization :: proc(s: ^State) -> (ok: bool) {
 	when ODIN_DEBUG {
 		vkb.instance_enable_validation_layers(&instance_builder)
 		vkb.instance_use_default_debug_messenger(&instance_builder)
-		vkb.instance_add_debug_messenger_severity(&instance_builder, {.INFO}) // for printf debugging
 
+		vkb.instance_add_debug_messenger_severity(&instance_builder, {.INFO}) // for printf debugging
 		vkb.instance_add_validation_feature_enable(&instance_builder, .DEBUG_PRINTF)
+		vkb.instance_set_debug_messenger_type(&instance_builder, {.VALIDATION, .PERFORMANCE})
 
 		VK_LAYER_LUNARG_MONITOR :: "VK_LAYER_LUNARG_monitor"
 
@@ -112,7 +117,10 @@ device_initialization :: proc(s: ^State) -> (ok: bool) {
 	}
 
 	when ODIN_DEBUG {
-		vkb.physical_device_enable_extension_if_present(s.physical_device, "VK_KHR_shader_non_semantic_info")
+		vkb.physical_device_enable_extension_if_present(
+			s.physical_device,
+			"VK_KHR_shader_non_semantic_info",
+		)
 	}
 
 	// Device
@@ -271,8 +279,8 @@ create_graphics_pipeline :: proc(s: ^State, data: ^Render_Data) -> (ok: bool) {
 		rasterizerDiscardEnable = false,
 		polygonMode             = .FILL,
 		lineWidth               = 1.0,
-		cullMode                = {},
-		frontFace               = .CLOCKWISE,
+		cullMode                = {.BACK},
+		frontFace               = .COUNTER_CLOCKWISE,
 		depthBiasEnable         = false,
 	}
 
@@ -621,14 +629,15 @@ record_command_buffer :: proc(
 	}
 	buffer_addr := vk.GetBufferDeviceAddress(s.device.handle, &bdai)
 	bdai2 := vk.BufferDeviceAddressInfo {
-		sType = .BUFFER_DEVICE_ADDRESS_INFO,
+		sType  = .BUFFER_DEVICE_ADDRESS_INFO,
 		buffer = data.index_buffer,
 	}
 	index_buffer_addr := vk.GetBufferDeviceAddress(s.device.handle, &bdai2)
 
 	pc := Push_Constants {
 		vertex_buffer_addr = buffer_addr,
-		index_buffer_addr = index_buffer_addr,
+		index_buffer_addr  = index_buffer_addr,
+		mvp                = data.mvp,
 	}
 	vk.CmdPushConstants(buffer, data.pipeline_layout, {.VERTEX}, 0, size_of(Push_Constants), &pc)
 
@@ -881,7 +890,6 @@ cleanup :: proc(s: ^State, data: ^Render_Data) {
 
 Vertex :: struct {
 	pos:   [2]f32,
-	_:     [8]u8,
 	color: [3]f32,
 }
 
@@ -908,9 +916,7 @@ vertices :: []Vertex {
 	{pos = {-0.5, +0.5}, color = {1.0, 1.0, 1.0}},
 }
 
-indices :: []u32 {
-	0, 1, 2, 2, 3, 0,
-}
+indices :: []u32{0, 1, 2, 2, 3, 0}
 
 main :: proc() {
 	when ODIN_DEBUG {
@@ -998,6 +1004,20 @@ main :: proc() {
 	main_loop: for !glfw.WindowShouldClose(state.window) {
 		glfw.PollEvents()
 		if !state.is_minimized {
+			time := glfw.GetTime()
+
+			model :=
+				linalg.matrix4_rotate_f32(f32(time) * 90.0 * (math.PI / 180.0), {0, 0.5, 0.5}) *
+				linalg.matrix4_scale_f32({1, 1, 1})
+
+			view := linalg.matrix4_translate_f32({0, 0, -4.5})
+
+			aspect := f32(width) / f32(height)
+
+			proj := matrix4_perspective_f32(45.0 * (math.PI / 180.0), aspect, 0.1, 5.0, false)
+
+			render_data.mvp = proj * view * model
+
 			if ok := draw_frame(&state, &render_data); !ok {
 				log.errorf("Failed to draw frame.")
 				break main_loop
@@ -1008,4 +1028,20 @@ main :: proc() {
 	cleanup(&state, &render_data)
 
 	log.info("Exiting...")
+}
+
+@(require_results)
+matrix4_perspective_f32 :: proc "contextless" (fovy, aspect, near, far: f32, flip_z_axis := true) -> (m: linalg.Matrix4f32) #no_bounds_check {
+	tan_half_fovy := math.tan(0.5 * fovy)
+	m[0, 0] = 1 / (aspect*tan_half_fovy)
+	m[1, 1] = -1 / (tan_half_fovy)
+	m[2, 2] = -(far) / (far - near)
+	m[3, 2] = -1
+	m[2, 3] = -far*near / (far - near)
+
+	if flip_z_axis {
+		m[2] = -m[2]
+	}
+
+	return
 }
