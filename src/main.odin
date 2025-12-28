@@ -9,6 +9,7 @@ import "core:mem"
 import "gfx"
 
 import glfw "vendor:glfw"
+import stbi "vendor:stb/image"
 import vk "vendor:vulkan"
 
 // Local packages
@@ -414,6 +415,213 @@ create_command_pool :: proc(s: ^State, data: ^Render_Data) -> (ok: bool) {
 	return true
 }
 
+create_textures :: proc(s: ^State, data: ^Render_Data) -> (ok: bool) {
+	x, y, c: i32
+	image_pixels := stbi.load("textures/texture.jpg", &x, &y, &c, 4)
+	if image_pixels == nil {
+		log.errorf("%s", stbi.failure_reason())
+		return false
+	}
+	image_size := vk.DeviceSize(x * y * 4)
+	log.infof("width: %d height: %d channels: %d -- total size: %d", x, y, c, image_size)
+
+	staging_buffer: vk.Buffer
+	staging_alloc: vma.Allocation
+	staging_info: vma.Allocation_Info
+
+	staging_createinfo := vk.BufferCreateInfo {
+		sType = .BUFFER_CREATE_INFO,
+		usage = {.TRANSFER_SRC},
+		size  = image_size,
+	}
+	staging_alloccreateinfo := vma.Allocation_Create_Info {
+		flags = {.Host_Access_Sequential_Write, .Mapped},
+		usage = .Auto,
+	}
+	vma.create_buffer(
+		s.allocator,
+		staging_createinfo,
+		staging_alloccreateinfo,
+		&staging_buffer,
+		&staging_alloc,
+		&staging_info,
+	)
+	vma.set_allocation_name(s.allocator, staging_alloc, "texture staging buffer")
+	log.infof("dst: %p src: %p", staging_info.mapped_data, &image_pixels)
+	mem.copy(staging_info.mapped_data, image_pixels, int(image_size))
+
+	vma.unmap_memory(s.allocator, staging_alloc)
+	stbi.image_free(image_pixels)
+
+	image_create := vk.ImageCreateInfo {
+		sType       = .IMAGE_CREATE_INFO,
+		imageType   = .D2,
+		format      = .B8G8R8A8_SRGB,
+		extent      = {u32(x), u32(y), 1},
+		mipLevels   = 1,
+		arrayLayers = 1,
+		samples     = {._1},
+		tiling      = .OPTIMAL,
+		usage       = {.SAMPLED, .TRANSFER_DST},
+		sharingMode = .EXCLUSIVE,
+	}
+	image_alloc_create := vma.Allocation_Create_Info {
+		usage = .Auto,
+		flags = {.Dedicated_Memory},
+	}
+
+	image: vk.Image
+	image_alloc: vma.Allocation
+	image_allocinfo: vma.Allocation_Info
+	vma.create_image(
+		s.allocator,
+		image_create,
+		image_alloc_create,
+		&image,
+		&image_alloc,
+		&image_allocinfo,
+	)
+	// Get Queue Family Indices
+	transfer_index := vkb.device_get_queue_index(s.device, .Transfer) or_return
+	graphics_index := vkb.device_get_queue_index(s.device, .Graphics) or_return
+
+	cmd_alloc_transfer := vk.CommandBufferAllocateInfo {
+		sType              = .COMMAND_BUFFER_ALLOCATE_INFO,
+		level              = .PRIMARY,
+		commandPool        = data.transfer_command_pool,
+		commandBufferCount = 1,
+	}
+
+	transfer_cmd: vk.CommandBuffer
+	vk.AllocateCommandBuffers(s.device.handle, &cmd_alloc_transfer, &transfer_cmd)
+
+	begin_info := vk.CommandBufferBeginInfo {
+		sType = .COMMAND_BUFFER_BEGIN_INFO,
+		flags = {.ONE_TIME_SUBMIT},
+	}
+	vk.BeginCommandBuffer(transfer_cmd, &begin_info)
+
+	// 1. Transition to Transfer Dest (Standard barrier)
+	transition_image_layout(
+		data,
+		transfer_cmd,
+		image,
+		.UNDEFINED,
+		.TRANSFER_DST_OPTIMAL,
+		{},
+		{.TRANSFER_WRITE},
+		{.TOP_OF_PIPE},
+		{.TRANSFER},
+	)
+
+	// 2. Copy
+	region := vk.BufferImageCopy {
+		imageSubresource = {aspectMask = {.COLOR}, layerCount = 1},
+		imageExtent = {u32(x), u32(y), 1},
+	}
+	vk.CmdCopyBufferToImage(transfer_cmd, staging_buffer, image, .TRANSFER_DST_OPTIMAL, 1, &region)
+
+	// 3. RELEASE BARRIER (Transfer -> Graphics)
+	// If families are same, we just do a layout transition. If different, we release ownership.
+	src_fam := transfer_index if transfer_index != graphics_index else vk.QUEUE_FAMILY_IGNORED
+	dst_fam := graphics_index if transfer_index != graphics_index else vk.QUEUE_FAMILY_IGNORED
+
+	release_barrier := vk.ImageMemoryBarrier2 {
+		sType = .IMAGE_MEMORY_BARRIER_2,
+		srcStageMask = {.TRANSFER},
+		srcAccessMask = {.TRANSFER_WRITE},
+		dstStageMask = {.FRAGMENT_SHADER}, // Ignored during Release, but good practice
+		dstAccessMask = {}, // Ignored during Release
+		oldLayout = .TRANSFER_DST_OPTIMAL,
+		newLayout = .SHADER_READ_ONLY_OPTIMAL,
+		srcQueueFamilyIndex = src_fam,
+		dstQueueFamilyIndex = dst_fam,
+		image = image,
+		subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
+	}
+
+	dep_info_rel := vk.DependencyInfo {
+		sType                   = .DEPENDENCY_INFO,
+		imageMemoryBarrierCount = 1,
+		pImageMemoryBarriers    = &release_barrier,
+	}
+	vk.CmdPipelineBarrier2(transfer_cmd, &dep_info_rel)
+
+	vk.EndCommandBuffer(transfer_cmd)
+
+	// Submit Step 1
+	submit_transfer := vk.SubmitInfo {
+		sType              = .SUBMIT_INFO,
+		commandBufferCount = 1,
+		pCommandBuffers    = &transfer_cmd,
+	}
+	vk.QueueSubmit(data.transfer_queue, 1, &submit_transfer, {})
+
+	// Wait for Transfer to finish so the data is ready for the Acquire operation
+	vk.QueueWaitIdle(data.transfer_queue)
+	vk.FreeCommandBuffers(s.device.handle, data.transfer_command_pool, 1, &transfer_cmd)
+
+	// =========================================================================
+	// STEP 2: GRAPHICS QUEUE OPERATIONS (Acquire)
+	// Only needed if the queue families are actually different
+	// =========================================================================
+
+	if transfer_index != graphics_index {
+		cmd_alloc_gfx := vk.CommandBufferAllocateInfo {
+			sType              = .COMMAND_BUFFER_ALLOCATE_INFO,
+			level              = .PRIMARY,
+			commandPool        = data.graphics_command_pool,
+			commandBufferCount = 1,
+		}
+
+		gfx_cmd: vk.CommandBuffer
+		vk.AllocateCommandBuffers(s.device.handle, &cmd_alloc_gfx, &gfx_cmd)
+
+		vk.BeginCommandBuffer(gfx_cmd, &begin_info)
+
+		// 4. ACQUIRE BARRIER (Transfer -> Graphics)
+		// Note: oldLayout and newLayout must MATCH the release barrier
+		acquire_barrier := vk.ImageMemoryBarrier2 {
+			sType = .IMAGE_MEMORY_BARRIER_2,
+			srcStageMask = {.TRANSFER}, // Must match release
+			srcAccessMask = {}, // Ignored during Acquire
+			dstStageMask = {.FRAGMENT_SHADER}, // When we will use it
+			dstAccessMask = {.SHADER_READ}, // How we will use it
+			oldLayout = .TRANSFER_DST_OPTIMAL,
+			newLayout = .SHADER_READ_ONLY_OPTIMAL,
+			srcQueueFamilyIndex = transfer_index,
+			dstQueueFamilyIndex = graphics_index,
+			image = image,
+			subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1},
+		}
+
+		dep_info_acq := vk.DependencyInfo {
+			sType                   = .DEPENDENCY_INFO,
+			imageMemoryBarrierCount = 1,
+			pImageMemoryBarriers    = &acquire_barrier,
+		}
+		vk.CmdPipelineBarrier2(gfx_cmd, &dep_info_acq)
+
+		vk.EndCommandBuffer(gfx_cmd)
+
+		// Submit Step 2
+		submit_gfx := vk.SubmitInfo {
+			sType              = .SUBMIT_INFO,
+			commandBufferCount = 1,
+			pCommandBuffers    = &gfx_cmd,
+		}
+		vk.QueueSubmit(data.graphics_queue, 1, &submit_gfx, {})
+		vk.QueueWaitIdle(data.graphics_queue)
+
+		vk.FreeCommandBuffers(s.device.handle, data.graphics_command_pool, 1, &gfx_cmd)
+	}
+
+	// Cleanup staging buffer now that transfer is fully complete
+	vma.destroy_buffer(s.allocator, staging_buffer, staging_alloc)
+
+	return true
+}
+
 create_command_buffers :: proc(s: ^State, data: ^Render_Data) -> (ok: bool) {
 	data.command_buffers = make([]vk.CommandBuffer, MAX_FRAMES_IN_FLIGHT)
 	defer if !ok {
@@ -520,7 +728,7 @@ create_index_buffer :: proc(s: ^State, data: ^Render_Data) -> (ok: bool) {
 transition_image_layout :: proc(
 	data: ^Render_Data,
 	buffer: vk.CommandBuffer,
-	image_index: u32,
+	image: vk.Image,
 	old_layout: vk.ImageLayout,
 	new_layout: vk.ImageLayout,
 	src_access_mask: vk.AccessFlags2,
@@ -538,7 +746,7 @@ transition_image_layout :: proc(
 		newLayout = new_layout,
 		srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
 		dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
-		image = data.swapchain_images[image_index],
+		image = image,
 		subresourceRange = {
 			aspectMask = {.COLOR},
 			baseMipLevel = 0,
@@ -577,7 +785,7 @@ record_command_buffer :: proc(
 	transition_image_layout(
 		data,
 		buffer,
-		image_index,
+		data.swapchain_images[image_index],
 		.UNDEFINED,
 		.COLOR_ATTACHMENT_OPTIMAL,
 		{},
@@ -652,7 +860,7 @@ record_command_buffer :: proc(
 	transition_image_layout(
 		data,
 		buffer,
-		image_index,
+		data.swapchain_images[image_index],
 		.COLOR_ATTACHMENT_OPTIMAL,
 		.PRESENT_SRC_KHR,
 		{.COLOR_ATTACHMENT_WRITE},
@@ -889,7 +1097,7 @@ cleanup :: proc(s: ^State, data: ^Render_Data) {
 }
 
 Vertex :: struct {
-	pos:   [2]f32,
+	pos:   [3]f32,
 	color: [3]f32,
 }
 
@@ -910,13 +1118,17 @@ vert_attr_desc := []vk.VertexInputAttributeDescription {
 }
 
 vertices :: []Vertex {
-	{pos = {-0.5, -0.5}, color = {1.0, 0.0, 0.0}},
-	{pos = {+0.5, -0.5}, color = {0.0, 1.0, 0.0}},
-	{pos = {+0.5, +0.5}, color = {0.0, 0.0, 1.0}},
-	{pos = {-0.5, +0.5}, color = {1.0, 1.0, 1.0}},
+	{pos = {-0.5, -0.5, -0.5}, color = {0.5, 0.0, 0.0}},
+	{pos = {+0.5, -0.5, -0.5}, color = {0.0, 0.5, 0.0}},
+	{pos = {+0.5, +0.5, -0.5}, color = {0.0, 0.0, 0.5}},
+	{pos = {+0.5, -0.5, -0.5}, color = {0.5, 0.5, 0.5}},
+	{pos = {-0.5, -0.5, +0.5}, color = {1.0, 0.0, 0.0}},
+	{pos = {+0.5, -0.5, +0.5}, color = {0.0, 1.0, 0.0}},
+	{pos = {+0.5, +0.5, +0.5}, color = {0.0, 0.0, 1.0}},
+	{pos = {+0.5, -0.5, +0.5}, color = {1.0, 1.0, 1.0}},
 }
 
-indices :: []u32{0, 1, 2, 2, 3, 0}
+indices :: []u32{0, 1, 2}
 
 main :: proc() {
 	when ODIN_DEBUG {
@@ -992,6 +1204,9 @@ main :: proc() {
 		log.errorf("Failed to create Vulkan Memory Allocator: [%v]", res)
 		return
 	}
+	if !create_textures(&state, &render_data) {
+		return
+	}
 	if !create_vert_buffer(&state, &render_data) {
 		return
 	}
@@ -1007,14 +1222,14 @@ main :: proc() {
 			time := glfw.GetTime()
 
 			model :=
-				linalg.matrix4_rotate_f32(f32(time) * 90.0 * (math.PI / 180.0), {0, 0.5, 0.5}) *
+				linalg.matrix4_rotate_f32(f32(time) * 90.0 * (math.PI / 180.0), {0, 0.05, 0}) *
 				linalg.matrix4_scale_f32({1, 1, 1})
 
 			view := linalg.matrix4_translate_f32({0, 0, -4.5})
 
 			aspect := f32(width) / f32(height)
 
-			proj := matrix4_perspective_f32(45.0 * (math.PI / 180.0), aspect, 0.1, 5.0, false)
+			proj := gfx.matrix4_perspective_f32(45.0 * (math.PI / 180.0), aspect, 0.1, 5.0, false)
 
 			render_data.mvp = proj * view * model
 
@@ -1030,18 +1245,4 @@ main :: proc() {
 	log.info("Exiting...")
 }
 
-@(require_results)
-matrix4_perspective_f32 :: proc "contextless" (fovy, aspect, near, far: f32, flip_z_axis := true) -> (m: linalg.Matrix4f32) #no_bounds_check {
-	tan_half_fovy := math.tan(0.5 * fovy)
-	m[0, 0] = 1 / (aspect*tan_half_fovy)
-	m[1, 1] = -1 / (tan_half_fovy)
-	m[2, 2] = -(far) / (far - near)
-	m[3, 2] = -1
-	m[2, 3] = -far*near / (far - near)
 
-	if flip_z_axis {
-		m[2] = -m[2]
-	}
-
-	return
-}
