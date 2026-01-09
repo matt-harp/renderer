@@ -1,6 +1,7 @@
 struct Vertex {
   float3 inPosition;
   float3 inColor;
+  float2 uv;
 };
 
 struct PushConstants {
@@ -12,9 +13,13 @@ struct PushConstants {
 [[push_constant]]
 ConstantBuffer<PushConstants> pc;
 
+[[vk::binding(0, 0)]]
+Sampler2D texSampler;
+
 struct VSOutput {
   float4 pos : SV_Position;
-  float3 color;
+  float3 color : COLOR;
+  float2 uv: TEXCOORD;
 };
 
 [shader("vertex")]
@@ -28,11 +33,13 @@ VSOutput vertMain(uint vertexID: SV_VertexID) {
   output.pos = mul(pc.mvp, localPos);
   // printf("z = %f", output.pos.z);
   output.color = v.inColor;
+  output.uv = v.uv;
 
   return output;
 }
 
 [shader("fragment")]
 float4 fragMain(VSOutput vertIn) : SV_TARGET {
-  return float4(vertIn.color, 1.0);
+  float4 color = texSampler.Sample(vertIn.uv);
+  return color;
 }

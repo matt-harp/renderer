@@ -16,25 +16,191 @@ GPUImage :: struct {
 }
 
 create_image :: proc(
+	r: Renderer,
 	format: vk.Format,
 	extent: vk.Extent3D,
 	image_usage_flags: vk.ImageUsageFlags,
 	mip_levels: u32 = 1,
 	array_layers: u32 = 1,
 	image_type: vk.ImageType = .D2,
-	msaa_samples: vk.SampleCountFlag = ._1,
+	msaa_samples: vk.SampleCountFlags = {._1},
 	tiling: vk.ImageTiling = .OPTIMAL,
 	flags: vk.ImageCreateFlags = {},
+	sharing_mode: vk.SharingMode = .EXCLUSIVE,
 	alloc_flags: vma.Allocation_Create_Flags = {},
-	usage: vma.Memory_Usage = .Gpu_Only,
+	alloc_usage: vma.Memory_Usage = .Gpu_Only,
 	debug_name: cstring = nil,
 	loc := #caller_location,
-) -> GPUImage {
-	img_alloc_info := vma.Allocation_Create_Info {
-		usage          = usage,
-		required_flags = {.DEVICE_LOCAL},
-		flags          = alloc_flags,
+) -> (
+	image: GPUImage,
+) {
+	img_create_info := vk.ImageCreateInfo {
+		sType       = .IMAGE_CREATE_INFO,
+		format      = format,
+		extent      = extent,
+		usage       = image_usage_flags,
+		mipLevels   = mip_levels,
+		arrayLayers = array_layers,
+		imageType   = image_type,
+		samples     = msaa_samples,
+		tiling      = tiling,
+		flags       = flags,
+		sharingMode = sharing_mode,
 	}
 
+	alloc_create_info := vma.Allocation_Create_Info {
+		usage = alloc_usage,
+		flags = alloc_flags,
+	}
 
+	image = GPUImage {
+		format         = format,
+		extent         = extent,
+		usage          = image_usage_flags,
+		mip_levels     = mip_levels,
+		array_layers   = array_layers,
+		current_layout = .UNDEFINED,
+	}
+
+	vk_check(
+		vma.create_image(
+			r.allocator,
+			img_create_info,
+			alloc_create_info,
+			&image.image,
+			&image.allocation,
+			nil,
+		),
+	)
+
+	view_type: vk.ImageViewType = .D1
+	if .CUBE_COMPATIBLE in flags {
+		view_type = .CUBE
+	} else {
+		switch image_type {
+		case .D1:
+			view_type = .D1
+		case .D2:
+			view_type = .D2
+		case .D3:
+			view_type = .D3
+		}
+	}
+
+	image.image_view = create_image_view(
+		r,
+		image.image,
+		image.format,
+		view_type,
+		base_mip_level = 0,
+		mip_count = mip_levels,
+		base_array_layer = 0,
+		layer_count = array_layers,
+	)
+
+	return image
+}
+
+create_image_view :: proc(
+	r: Renderer,
+	image: vk.Image,
+	format: vk.Format,
+	view_type: vk.ImageViewType = .D2,
+	base_mip_level: u32 = 0,
+	mip_count: u32 = 1,
+	base_array_layer: u32 = 0,
+	layer_count: u32 = 1,
+) -> (
+	view: vk.ImageView,
+) {
+	sub_range := vk.ImageSubresourceRange {
+		aspectMask     = {.COLOR},
+		baseMipLevel   = base_mip_level,
+		levelCount     = mip_count,
+		baseArrayLayer = base_array_layer,
+		layerCount     = layer_count,
+	}
+	view_create_info := vk.ImageViewCreateInfo {
+		sType            = .IMAGE_VIEW_CREATE_INFO,
+		image            = image,
+		viewType         = view_type,
+		format           = format,
+		subresourceRange = sub_range,
+	}
+
+	vk_check(vk.CreateImageView(r.device.device, &view_create_info, nil, &view))
+
+	return view
+}
+
+create_sampler :: proc(
+	r: Renderer,
+	min_filter: vk.Filter = .LINEAR,
+	mag_filter: vk.Filter = .LINEAR,
+	mip_mode: vk.SamplerMipmapMode = .LINEAR,
+	addr_mode_u: vk.SamplerAddressMode = .REPEAT,
+	addr_mode_v: vk.SamplerAddressMode = .REPEAT,
+	addr_mode_w: vk.SamplerAddressMode = .REPEAT,
+	max_anisotropy: f32 = 1.0,
+) -> (
+	sampler: vk.Sampler,
+) {
+	sampler_create_info := vk.SamplerCreateInfo {
+		sType                   = .SAMPLER_CREATE_INFO,
+		minFilter               = min_filter,
+		magFilter               = mag_filter,
+		mipmapMode              = mip_mode,
+		addressModeU            = addr_mode_u,
+		addressModeV            = addr_mode_v,
+		addressModeW            = addr_mode_w,
+		anisotropyEnable        = max_anisotropy > 1.0,
+		maxAnisotropy           = max_anisotropy,
+		borderColor             = .INT_OPAQUE_BLACK,
+		unnormalizedCoordinates = false,
+		compareEnable           = false,
+		compareOp               = .ALWAYS,
+		mipLodBias              = 0,
+		minLod                  = 0,
+		maxLod                  = 0,
+	}
+
+	vk_check(vk.CreateSampler(r.device.device, &sampler_create_info, nil, &sampler))
+
+	return sampler
+}
+
+transition_vk_image :: proc(
+	buffer: vk.CommandBuffer,
+	image: vk.Image,
+	src_stage_mask, dst_stage_mask: vk.PipelineStageFlags2,
+	src_access_mask, dst_access_mask: vk.AccessFlags2,
+	old_layout: vk.ImageLayout,
+	new_layout: vk.ImageLayout,
+	aspect_mask: vk.ImageAspectFlags = {.COLOR}
+) {
+	barrier := vk.ImageMemoryBarrier2 {
+		sType = .IMAGE_MEMORY_BARRIER_2,
+		srcStageMask = src_stage_mask,
+		srcAccessMask = src_access_mask,
+		dstStageMask = dst_stage_mask,
+		dstAccessMask = dst_access_mask,
+		oldLayout = old_layout,
+		newLayout = new_layout,
+		srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
+		dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
+		image = image,
+		subresourceRange = {
+			aspectMask = aspect_mask,
+			baseMipLevel = 0,
+			levelCount = 1,
+			baseArrayLayer = 0,
+			layerCount = vk.REMAINING_ARRAY_LAYERS,
+		},
+	}
+	dependency_info := vk.DependencyInfo {
+		sType                   = .DEPENDENCY_INFO,
+		pImageMemoryBarriers    = &barrier,
+		imageMemoryBarrierCount = 1,
+	}
+	vk.CmdPipelineBarrier2(buffer, &dependency_info)
 }
