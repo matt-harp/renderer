@@ -8,13 +8,18 @@ struct PushConstants {
   float4x4 mvp;
   Vertex *buffer;
   uint *indices;
+  uint texture_id;
+  uint sampler_id;
 }
 
 [[push_constant]]
 ConstantBuffer<PushConstants> pc;
 
 [[vk::binding(0, 0)]]
-Sampler2D texSampler;
+Texture2D textures[];
+
+[[vk::binding(1, 0)]]
+SamplerState samplers[];
 
 struct VSOutput {
   float4 pos : SV_Position;
@@ -40,6 +45,5 @@ VSOutput vertMain(uint vertexID: SV_VertexID) {
 
 [shader("fragment")]
 float4 fragMain(VSOutput vertIn) : SV_TARGET {
-  float4 color = texSampler.Sample(vertIn.uv);
-  return color;
+  return textures[pc.texture_id].Sample(samplers[pc.sampler_id], vertIn.uv);
 }

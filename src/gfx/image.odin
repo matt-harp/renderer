@@ -1,5 +1,6 @@
 package gfx
 
+import "core:strings"
 import vma "thirdparty:odin-vma"
 import vk "vendor:vulkan"
 
@@ -17,6 +18,7 @@ GPUImage :: struct {
 
 create_image :: proc(
 	r: Renderer,
+	name: string,
 	format: vk.Format,
 	extent: vk.Extent3D,
 	image_usage_flags: vk.ImageUsageFlags,
@@ -72,6 +74,11 @@ create_image :: proc(
 			nil,
 		),
 	)
+	when ODIN_DEBUG {
+		c_str := strings.clone_to_cstring(name)
+		vma.set_allocation_name(r.allocator, image.allocation, c_str)
+		delete(c_str)
+	}
 
 	view_type: vk.ImageViewType = .D1
 	if .CUBE_COMPATIBLE in flags {
@@ -107,14 +114,14 @@ create_image_view :: proc(
 	format: vk.Format,
 	view_type: vk.ImageViewType = .D2,
 	base_mip_level: u32 = 0,
-	mip_count: u32 = 1,
+	mip_count: u32 = vk.REMAINING_MIP_LEVELS,
 	base_array_layer: u32 = 0,
-	layer_count: u32 = 1,
+	layer_count: u32 = vk.REMAINING_ARRAY_LAYERS,
 ) -> (
 	view: vk.ImageView,
 ) {
 	sub_range := vk.ImageSubresourceRange {
-		aspectMask     = {.COLOR},
+		aspectMask     = get_aspect_mask_from_format(format),
 		baseMipLevel   = base_mip_level,
 		levelCount     = mip_count,
 		baseArrayLayer = base_array_layer,
@@ -169,6 +176,20 @@ create_sampler :: proc(
 	return sampler
 }
 
+get_aspect_mask_from_format :: proc(format: vk.Format) -> vk.ImageAspectFlags {
+	#partial switch format {
+	// Depth formats
+	case .D16_UNORM, .D32_SFLOAT, .X8_D24_UNORM_PACK32:
+		return {.DEPTH}
+
+	// Depth/Stencil combined formats
+	case .D16_UNORM_S8_UINT, .D24_UNORM_S8_UINT, .D32_SFLOAT_S8_UINT:
+		return {.DEPTH, .STENCIL}
+	}
+
+	return {.COLOR}
+}
+
 transition_vk_image :: proc(
 	buffer: vk.CommandBuffer,
 	image: vk.Image,
@@ -176,7 +197,7 @@ transition_vk_image :: proc(
 	src_access_mask, dst_access_mask: vk.AccessFlags2,
 	old_layout: vk.ImageLayout,
 	new_layout: vk.ImageLayout,
-	aspect_mask: vk.ImageAspectFlags = {.COLOR}
+	aspect_mask: vk.ImageAspectFlags = {.COLOR},
 ) {
 	barrier := vk.ImageMemoryBarrier2 {
 		sType = .IMAGE_MEMORY_BARRIER_2,
@@ -203,4 +224,9 @@ transition_vk_image :: proc(
 		imageMemoryBarrierCount = 1,
 	}
 	vk.CmdPipelineBarrier2(buffer, &dependency_info)
+}
+
+destroy_image :: proc(r: ^Renderer, image: GPUImage) {
+	vma.destroy_image(r.allocator, image.image, image.allocation)
+	vk.DestroyImageView(r.device.device, image.image_view, nil)
 }

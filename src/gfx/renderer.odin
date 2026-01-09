@@ -34,54 +34,63 @@ Frame_Data :: struct {
 }
 
 Renderer :: struct {
-	window:                 glfw.WindowHandle,
-	instance:               ^vkb.Instance,
-	surface:                vk.SurfaceKHR,
-	physical_device:        ^vkb.Physical_Device,
-	device:                 ^vkb.Device,
-	allocator:              vma.Allocator,
+	window:                glfw.WindowHandle,
+	instance:              ^vkb.Instance,
+	surface:               vk.SurfaceKHR,
+	physical_device:       ^vkb.Physical_Device,
+	device:                ^vkb.Device,
+	allocator:             vma.Allocator,
 
 	// Swapchain
-	swapchain:              ^vkb.Swapchain,
-	swapchain_images:       []vk.Image,
-	swapchain_image_views:  []vk.ImageView,
-	is_minimized:           bool,
-	render_semaphores:      []vk.Semaphore,
+	swapchain:             ^vkb.Swapchain,
+	swapchain_images:      []vk.Image,
+	swapchain_image_views: []vk.ImageView,
+	is_minimized:          bool,
+	render_semaphores:     []vk.Semaphore,
 
 	// Queues
-	graphics_queue:         vk.Queue,
-	present_queue:          vk.Queue,
-	transfer_queue:         vk.Queue,
-	graphics_command_pool:  vk.CommandPool,
-	transfer_command_pool:  vk.CommandPool,
+	graphics_queue:        vk.Queue,
+	present_queue:         vk.Queue,
+	transfer_queue:        vk.Queue,
+	graphics_command_pool: vk.CommandPool,
+	transfer_command_pool: vk.CommandPool,
 
 	// Frame data
-	frames:                 [MAX_FRAMES_IN_FLIGHT]Frame_Data,
-	frame_index:            uint,
+	frames:                [MAX_FRAMES_IN_FLIGHT]Frame_Data,
+	frame_index:           uint,
 
 	// Immediate submit
-	imm_fence:              vk.Fence,
-	imm_command_pool:       vk.CommandPool,
-	imm_command_buffer:     vk.CommandBuffer,
+	imm_fence:             vk.Fence,
+	imm_command_pool:      vk.CommandPool,
+	imm_command_buffer:    vk.CommandBuffer,
 
 	// Assets TODO move to asset manager
-	pipeline_layout:        vk.PipelineLayout,
-	graphics_pipeline:      vk.Pipeline,
-	vertex_buffer:          GPUBuffer,
-	index_buffer:           GPUBuffer,
-	depth_image:            GPUImage,
+	pipeline_layout:       vk.PipelineLayout,
+	graphics_pipeline:     vk.Pipeline,
 
-	// textures
-	sampler:                vk.Sampler,
-	descriptor_set_layout:  vk.DescriptorSetLayout,
-	descriptor_pool:        vk.DescriptorPool,
-	texture_descriptor_set: vk.DescriptorSet,
+	// gbuffer
+	depth_image:           GPUImage,
+
+	// buffers
+	vertex_buffer:         GPUBuffer,
+	index_buffer:          GPUBuffer,
+
+	// resources
+	textures:              [10]GPUImage,
+	samplers:              [3]vk.Sampler,
+
+	// bindless
+	bindless_layout:       vk.DescriptorSetLayout,
+	bindless_pool:         vk.DescriptorPool,
+	bindless_set:          vk.DescriptorSet,
 }
 
 Push_Constants :: struct {
 	mvp:                linalg.Matrix4f32,
 	vertex_buffer_addr: vk.DeviceAddress,
 	index_buffer_addr:  vk.DeviceAddress,
+	texture:            u32,
+	sampler:            u32,
 }
 
 init_renderer :: proc(r: ^Renderer) -> (ok: bool) {
@@ -96,14 +105,21 @@ init_renderer :: proc(r: ^Renderer) -> (ok: bool) {
 
 	// create allocator
 	{
-		vma_vulkan_functions := vma.create_vulkan_functions()
+		vma_funcs := vma.create_vulkan_functions()
+		vma_funcs.get_buffer_memory_requirements2_khr = vk.GetBufferMemoryRequirements2
+		vma_funcs.get_image_memory_requirements2_khr = vk.GetImageMemoryRequirements2
+		vma_funcs.bind_buffer_memory2_khr = vk.BindBufferMemory2
+		vma_funcs.bind_image_memory2_khr = vk.BindImageMemory2
+		vma_funcs.get_physical_device_memory_properties2_khr =
+			vk.GetPhysicalDeviceMemoryProperties2
+
 		allocator_create_info := vma.Allocator_Create_Info {
 			flags              = {.Buffer_Device_Address},
 			instance           = r.instance.instance,
 			vulkan_api_version = MINIMUM_API_VERSION,
 			physical_device    = r.physical_device.physical_device,
 			device             = r.device.device,
-			vulkan_functions   = &vma_vulkan_functions,
+			vulkan_functions   = &vma_funcs,
 		}
 		if res := vma.create_allocator(allocator_create_info, &r.allocator); res != .SUCCESS {
 			log.errorf("Failed to create Vulkan Memory Allocator: [%v]", res)
@@ -194,8 +210,40 @@ init_renderer :: proc(r: ^Renderer) -> (ok: bool) {
 
 	init_descriptors(r) or_return
 
+	sampler := create_sampler(r^)
+	r.samplers[0] = sampler
+
+	sampler_info := vk.DescriptorImageInfo {
+		sampler = sampler,
+	}
+	sampler_write := vk.WriteDescriptorSet {
+		sType           = .WRITE_DESCRIPTOR_SET,
+		dstSet          = r.bindless_set,
+		dstBinding      = 1,
+		dstArrayElement = 0,
+		descriptorCount = 1,
+		descriptorType  = .SAMPLER,
+		pImageInfo      = &sampler_info,
+	}
+	vk.UpdateDescriptorSets(r.device.device, 1, &sampler_write, 0, nil)
+
 	tex := load_texture_from_file(r, "textures/texture.jpg") or_return
-	update_texture_descriptor(r, tex)
+	r.textures[0] = tex
+
+	image_info := vk.DescriptorImageInfo {
+		imageView = tex.image_view,
+		imageLayout = .SHADER_READ_ONLY_OPTIMAL,
+	}
+	image_write := vk.WriteDescriptorSet {
+		sType = .WRITE_DESCRIPTOR_SET,
+		dstSet = r.bindless_set,
+		dstBinding = 0,
+		dstArrayElement = 0,
+		descriptorType = .SAMPLED_IMAGE,
+		descriptorCount = 1,
+		pImageInfo = &image_info,
+	}
+	vk.UpdateDescriptorSets(r.device.device, 1, &image_write, 0, nil)
 
 	create_graphics_pipeline(r) or_return
 
@@ -204,18 +252,16 @@ init_renderer :: proc(r: ^Renderer) -> (ok: bool) {
 		r.vertex_buffer = create_buffer(
 			r^,
 			Vertex,
+			"Vertex Buffer",
 			len(vertices),
 			{.VERTEX_BUFFER, .SHADER_DEVICE_ADDRESS},
 			{.Host_Access_Sequential_Write, .Mapped},
 		)
-		mem.copy(
-			r.vertex_buffer.info.mapped_data,
-			raw_data(vertices),
-			int(r.vertex_buffer.info.size),
-		)
+		mem.copy(r.vertex_buffer.info.mapped_data, raw_data(vertices), int(r.vertex_buffer.info.size))
 		r.index_buffer = create_buffer(
 			r^,
 			u32,
+			"Index Buffer",
 			len(indices),
 			{.INDEX_BUFFER, .SHADER_DEVICE_ADDRESS},
 			{.Host_Access_Sequential_Write, .Mapped},
@@ -223,7 +269,7 @@ init_renderer :: proc(r: ^Renderer) -> (ok: bool) {
 		mem.copy(r.index_buffer.info.mapped_data, raw_data(indices), int(r.index_buffer.info.size))
 
 		extent := vk.Extent3D{r.swapchain.extent.width, r.swapchain.extent.height, 1}
-		r.depth_image = create_image(r^, .D32_SFLOAT, extent, {.DEPTH_STENCIL_ATTACHMENT})
+		r.depth_image = create_image(r^, "Depth Image", .D32_SFLOAT, extent, {.DEPTH_STENCIL_ATTACHMENT})
 	}
 
 	return true
@@ -232,9 +278,35 @@ init_renderer :: proc(r: ^Renderer) -> (ok: bool) {
 destroy_renderer :: proc(r: ^Renderer) {
 	vk.DeviceWaitIdle(r.device.device)
 
-	destroy_buffer(r, r.vertex_buffer)
+	destroy_image(r, r.textures[0])
+	destroy_image(r, r.depth_image)
 	destroy_buffer(r, r.index_buffer)
+	destroy_buffer(r, r.vertex_buffer)
+
+	// --- LEAK DETECTION START ---
+	stats: vma.Total_Statistics
+	vma.calculate_statistics(r.allocator, &stats)
+
+	if stats.total.statistics.allocation_bytes > 0 {
+		log.warn("VMA Leaked Memory.")
+
+		stats_string: cstring
+		vma.build_stats_string(r.allocator, &stats_string, true)
+
+		if stats_string != nil {
+			// You can check if total bytes > 0 here to log only on leaks
+			log.infof("VMA Leak Report: %s", stats_string)
+			vma.free_stats_string(r.allocator, stats_string)
+		}
+	}
+	// --- LEAK DETECTION END ---
+
 	vma.destroy_allocator(r.allocator)
+
+	vk.DestroyDescriptorSetLayout(r.device.device, r.bindless_layout, nil)
+	vk.DestroySampler(r.device.device, r.samplers[0], nil)
+
+	vk.DestroyDescriptorPool(r.device.device, r.bindless_pool, nil)
 
 	destroy_sync_objects(r)
 
@@ -256,89 +328,68 @@ destroy_renderer :: proc(r: ^Renderer) {
 }
 
 init_descriptors :: proc(r: ^Renderer) -> (ok: bool) {
-	// Create layout
-	binding := vk.DescriptorSetLayoutBinding {
-		binding            = 0,
-		descriptorType     = .COMBINED_IMAGE_SAMPLER,
-		descriptorCount    = 1,
-		stageFlags         = {.FRAGMENT},
-		pImmutableSamplers = nil,
+	// 1. Layout Bindings
+	bindings := [2]vk.DescriptorSetLayoutBinding {
+		{
+			binding         = 0, // Textures
+			descriptorType  = .SAMPLED_IMAGE,
+			descriptorCount = 1000,
+			stageFlags      = {.FRAGMENT},
+		},
+		{
+			binding         = 1, // Samplers
+			descriptorType  = .SAMPLER,
+			descriptorCount = 1,
+			stageFlags      = {.FRAGMENT},
+		},
+	}
+
+	// 2. Flags to allow "Partially Bound" (so you don't need 1000 textures to start)
+	flags := [2]vk.DescriptorBindingFlags {
+		{.PARTIALLY_BOUND, .UPDATE_AFTER_BIND}, // For textures
+		{}, // For samplers
+	}
+
+	flags_info := vk.DescriptorSetLayoutBindingFlagsCreateInfo {
+		sType         = .DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
+		bindingCount  = 2,
+		pBindingFlags = raw_data(&flags),
 	}
 
 	layout_info := vk.DescriptorSetLayoutCreateInfo {
 		sType        = .DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-		bindingCount = 1,
-		pBindings    = &binding,
+		pNext        = &flags_info,
+		bindingCount = 2,
+		pBindings    = &bindings[0],
+		flags        = {.UPDATE_AFTER_BIND_POOL},
 	}
+	vk.CreateDescriptorSetLayout(r.device.device, &layout_info, nil, &r.bindless_layout)
 
-	if res := vk.CreateDescriptorSetLayout(
-		r.device.device,
-		&layout_info,
-		nil,
-		&r.descriptor_set_layout,
-	); res != .SUCCESS {
-		log.errorf("Failed to create descriptor set layout: [%v]", res)
-		return
-	}
-
-	// Create pool
-	pool_size := vk.DescriptorPoolSize {
-		type            = .COMBINED_IMAGE_SAMPLER,
-		descriptorCount = 1,
+	// 3. Pool (Must support UPDATE_AFTER_BIND)
+	pool_sizes := [2]vk.DescriptorPoolSize {
+		{type = .SAMPLED_IMAGE, descriptorCount = 1000},
+		{type = .SAMPLER, descriptorCount = 10},
 	}
 
 	pool_info := vk.DescriptorPoolCreateInfo {
 		sType         = .DESCRIPTOR_POOL_CREATE_INFO,
-		poolSizeCount = 1,
-		pPoolSizes    = &pool_size,
+		flags         = {.UPDATE_AFTER_BIND},
 		maxSets       = 1,
+		poolSizeCount = 2,
+		pPoolSizes    = &pool_sizes[0],
 	}
+	vk.CreateDescriptorPool(r.device.device, &pool_info, nil, &r.bindless_pool)
 
-	if res := vk.CreateDescriptorPool(r.device.device, &pool_info, nil, &r.descriptor_pool);
-	   res != .SUCCESS {
-		log.errorf("Failed to create descriptor pool: [%v]", res)
-		return
-	}
-
-	// 3. Allocate the Set (The Instance)
+	// 4. Allocate the one Global Set
 	alloc_info := vk.DescriptorSetAllocateInfo {
 		sType              = .DESCRIPTOR_SET_ALLOCATE_INFO,
-		descriptorPool     = r.descriptor_pool,
+		descriptorPool     = r.bindless_pool,
 		descriptorSetCount = 1,
-		pSetLayouts        = &r.descriptor_set_layout,
+		pSetLayouts        = &r.bindless_layout,
 	}
-
-	if res := vk.AllocateDescriptorSets(r.device.device, &alloc_info, &r.texture_descriptor_set);
-	   res != .SUCCESS {
-		log.errorf("Failed to allocate descriptor set: [%v]", res)
-		return
-	}
+	vk.AllocateDescriptorSets(r.device.device, &alloc_info, &r.bindless_set)
 
 	return true
-}
-
-update_texture_descriptor :: proc(r: ^Renderer, texture: GPUImage) {
-	r.sampler = create_sampler(r^)
-
-	// 2. Prepare the info struct
-	image_info := vk.DescriptorImageInfo {
-		imageLayout = .SHADER_READ_ONLY_OPTIMAL,
-		imageView   = texture.image_view,
-		sampler     = r.sampler,
-	}
-
-	// 3. Write it to the set
-	write := vk.WriteDescriptorSet {
-		sType           = .WRITE_DESCRIPTOR_SET,
-		dstSet          = r.texture_descriptor_set,
-		dstBinding      = 0,
-		dstArrayElement = 0,
-		descriptorType  = .COMBINED_IMAGE_SAMPLER,
-		descriptorCount = 1,
-		pImageInfo      = &image_info,
-	}
-
-	vk.UpdateDescriptorSets(r.device.device, 1, &write, 0, nil)
 }
 
 SwapchainConfig :: struct {
@@ -586,23 +637,16 @@ record_command_buffer :: proc(
 
 	vk.CmdBindPipeline(buffer, .GRAPHICS, r.graphics_pipeline)
 
-	vk.CmdBindDescriptorSets(
-		buffer,
-		.GRAPHICS,
-		r.pipeline_layout,
-		0,
-		1,
-		&r.texture_descriptor_set,
-		0,
-		nil,
-	)
+	vk.CmdBindDescriptorSets(buffer, .GRAPHICS, r.pipeline_layout, 0, 1, &r.bindless_set, 0, nil)
 
 	pc := Push_Constants {
 		vertex_buffer_addr = r.vertex_buffer.address.?,
 		index_buffer_addr  = r.index_buffer.address.?,
 		mvp                = mvp,
+		sampler            = 0,
+		texture            = 0,
 	}
-	vk.CmdPushConstants(buffer, r.pipeline_layout, {.VERTEX}, 0, size_of(Push_Constants), &pc)
+	vk.CmdPushConstants(buffer, r.pipeline_layout, {.VERTEX, .FRAGMENT}, 0, size_of(Push_Constants), &pc)
 
 	vk.CmdSetViewport(buffer, 0, 1, &viewport)
 	vk.CmdSetScissor(buffer, 0, 1, &scissor)
@@ -746,6 +790,7 @@ load_texture_from_file :: proc(r: ^Renderer, path: cstring) -> (tex: GPUImage, o
 	staging := create_buffer(
 		r^,
 		byte,
+		"staging buffer",
 		img_size,
 		{.TRANSFER_SRC},
 		{.Host_Access_Sequential_Write, .Mapped},
@@ -754,7 +799,7 @@ load_texture_from_file :: proc(r: ^Renderer, path: cstring) -> (tex: GPUImage, o
 	mem.copy(staging.info.mapped_data, pixels, img_size)
 
 	// Create the GPU Image
-	tex = create_image(r^, .R8G8B8A8_SRGB, extent, {.TRANSFER_DST, .SAMPLED})
+	tex = create_image(r^, "texture", .R8G8B8A8_SRGB, extent, {.TRANSFER_DST, .SAMPLED})
 
 	// copy staging -> image
 	cb := begin_immediate_submit(r)

@@ -155,7 +155,7 @@ create_graphics_pipeline :: proc(r: ^Renderer) -> (ok: bool) {
 
 	// Pipeline layout
 	pc_range := vk.PushConstantRange {
-		stageFlags = {.VERTEX},
+		stageFlags = {.VERTEX, .FRAGMENT},
 		offset     = 0,
 		size       = size_of(Push_Constants),
 	}
@@ -163,7 +163,7 @@ create_graphics_pipeline :: proc(r: ^Renderer) -> (ok: bool) {
 	pipeline_layout_info := vk.PipelineLayoutCreateInfo {
 		sType                  = .PIPELINE_LAYOUT_CREATE_INFO,
 		setLayoutCount         = 1,
-		pSetLayouts            = &r.descriptor_set_layout,
+		pSetLayouts            = &r.bindless_layout,
 		pushConstantRangeCount = 1,
 		pPushConstantRanges    = &pc_range,
 	}

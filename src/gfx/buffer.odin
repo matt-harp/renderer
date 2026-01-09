@@ -1,7 +1,9 @@
 package gfx
 
+import "core:strings"
 import vma "thirdparty:odin-vma"
 import vk "vendor:vulkan"
+
 
 GPUBuffer :: struct {
 	buffer:     vk.Buffer,
@@ -13,6 +15,7 @@ GPUBuffer :: struct {
 create_buffer :: proc(
 	r: Renderer,
 	$T: typeid,
+	name: string,
 	#any_int size: vk.DeviceSize = 1,
 	vk_usage: vk.BufferUsageFlags,
 	vma_flags: vma.Allocation_Create_Flags,
@@ -24,9 +27,9 @@ create_buffer :: proc(
 
 	alloc_size := cast(vk.DeviceSize)(size_of(T) * size)
 	buffer_create_info := vk.BufferCreateInfo {
-		sType                 = .BUFFER_CREATE_INFO,
-		size                  = alloc_size,
-		usage                 = vk_usage,
+		sType = .BUFFER_CREATE_INFO,
+		size  = alloc_size,
+		usage = vk_usage,
 	}
 
 	alloc_create_info := vma.Allocation_Create_Info {
@@ -44,6 +47,11 @@ create_buffer :: proc(
 			&buffer.info,
 		),
 	)
+	when ODIN_DEBUG {
+		c_str := strings.clone_to_cstring(name)
+		vma.set_allocation_name(r.allocator, buffer.allocation, c_str)
+		delete(c_str)
+	}
 
 	if .SHADER_DEVICE_ADDRESS in vk_usage {
 		device_address_info := vk.BufferDeviceAddressInfo {
