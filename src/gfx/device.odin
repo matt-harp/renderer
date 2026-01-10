@@ -106,12 +106,13 @@ init_device :: proc(r: ^Renderer) -> (ok: bool) {
 	vk12 := vk.PhysicalDeviceVulkan12Features {
 		sType               = .PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
 		bufferDeviceAddress = true,
+		scalarBlockLayout = true,
 		// descriptorIndexing                           = true,
 		// shaderSampledImageArrayNonUniformIndexing    = true,
-		// runtimeDescriptorArray                       = true,
+		runtimeDescriptorArray                       = true,
 		// descriptorBindingVariableDescriptorCount     = true,
-		// descriptorBindingPartiallyBound              = true,
-		// descriptorBindingSampledImageUpdateAfterBind = true,
+		descriptorBindingPartiallyBound              = true,
+		descriptorBindingSampledImageUpdateAfterBind = true,
 	}
 	vkb.device_builder_add_pnext(device_builder, &vk12)
 
