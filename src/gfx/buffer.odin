@@ -3,14 +3,7 @@ package gfx
 import "core:strings"
 import vma "thirdparty:odin-vma"
 import vk "vendor:vulkan"
-
-
-GPUBuffer :: struct {
-	buffer:     vk.Buffer,
-	allocation: vma.Allocation,
-	info:       vma.Allocation_Info,
-	address:    Maybe(vk.DeviceAddress),
-}
+import hm "handle_map"
 
 create_buffer :: proc(
 	r: Renderer,
@@ -21,9 +14,10 @@ create_buffer :: proc(
 	vma_flags: vma.Allocation_Create_Flags,
 	loc := #caller_location,
 ) -> (
-	buffer: GPUBuffer,
+	handle: Buffer_Id,
 ) {
 	assert(r.allocator != nil, "VMA needs to be initialized first")
+	buffer: GPUBuffer
 
 	alloc_size := cast(vk.DeviceSize)(size_of(T) * size)
 	buffer_create_info := vk.BufferCreateInfo {
@@ -61,9 +55,12 @@ create_buffer :: proc(
 		buffer.address = vk.GetBufferDeviceAddress(r.device.device, &device_address_info)
 	}
 
-	return buffer
+	handle = hm.add(&r.shader_resources.buffer_slots, buffer)
+	
+	return handle
 }
 
-destroy_buffer :: proc(r: ^Renderer, buffer: GPUBuffer) {
+destroy_buffer :: proc(r: ^Renderer, handle: Buffer_Id) {
+	buffer := hm.get(r.shader_resources.buffer_slots, handle)
 	vma.destroy_buffer(r.allocator, buffer.buffer, buffer.allocation)
 }
