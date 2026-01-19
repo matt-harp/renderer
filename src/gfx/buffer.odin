@@ -17,7 +17,9 @@ create_buffer :: proc(
 	handle: Buffer_Id,
 ) {
 	assert(r.allocator != nil, "VMA needs to be initialized first")
-	buffer: GPUBuffer
+	buffer := GPUBuffer {
+		name = name,
+	}
 
 	alloc_size := cast(vk.DeviceSize)(size_of(T) * size)
 	buffer_create_info := vk.BufferCreateInfo {
@@ -55,12 +57,18 @@ create_buffer :: proc(
 		buffer.address = vk.GetBufferDeviceAddress(r.device.device, &device_address_info)
 	}
 
-	handle = hm.add(&r.shader_resources.buffer_slots, buffer)
-	
+	handle = hm.add(&r.shader_resources.buffers, buffer)
+
 	return handle
 }
 
 destroy_buffer :: proc(r: ^Renderer, handle: Buffer_Id) {
-	buffer := hm.get(r.shader_resources.buffer_slots, handle)
+	buffer := hm.get(r.shader_resources.buffers, handle)
+	destroy_buffer_unsafe(r, buffer)
+	hm.remove(&r.shader_resources.buffers, handle)
+}
+
+destroy_buffer_unsafe :: proc(r: ^Renderer, buffer: ^GPUBuffer) {
+	// log.debugf("destroying buffer %#v", buffer)
 	vma.destroy_buffer(r.allocator, buffer.buffer, buffer.allocation)
 }

@@ -4,17 +4,7 @@ import "core:strings"
 import vma "thirdparty:odin-vma"
 import vk "vendor:vulkan"
 
-GPUImage :: struct {
-	image:          vk.Image,
-	image_view:     vk.ImageView,
-	allocation:     vma.Allocation,
-	extent:         vk.Extent3D,
-	format:         vk.Format,
-	mip_levels:     u32,
-	array_layers:   u32,
-	current_layout: vk.ImageLayout,
-	usage:          vk.ImageUsageFlags,
-}
+import hm "handle_map"
 
 create_image :: proc(
 	r: Renderer,
@@ -34,8 +24,19 @@ create_image :: proc(
 	debug_name: cstring = nil,
 	loc := #caller_location,
 ) -> (
-	image: GPUImage,
+	handle: Image_Id,
 ) {
+	assert(r.allocator != nil, "VMA needs to be initialized first")
+	image := GPUImage {
+		format         = format,
+		extent         = extent,
+		usage          = image_usage_flags,
+		mip_levels     = mip_levels,
+		array_layers   = array_layers,
+		current_layout = .UNDEFINED,
+		name           = name,
+	}
+
 	img_create_info := vk.ImageCreateInfo {
 		sType       = .IMAGE_CREATE_INFO,
 		format      = format,
@@ -53,15 +54,6 @@ create_image :: proc(
 	alloc_create_info := vma.Allocation_Create_Info {
 		usage = alloc_usage,
 		flags = alloc_flags,
-	}
-
-	image = GPUImage {
-		format         = format,
-		extent         = extent,
-		usage          = image_usage_flags,
-		mip_levels     = mip_levels,
-		array_layers   = array_layers,
-		current_layout = .UNDEFINED,
 	}
 
 	vk_check(
@@ -105,7 +97,9 @@ create_image :: proc(
 		layer_count = array_layers,
 	)
 
-	return image
+	handle = hm.add(&r.shader_resources.images, image)
+
+	return handle
 }
 
 create_image_view :: proc(
@@ -226,7 +220,14 @@ transition_vk_image :: proc(
 	vk.CmdPipelineBarrier2(buffer, &dependency_info)
 }
 
-destroy_image :: proc(r: ^Renderer, image: GPUImage) {
+destroy_image :: proc(r: ^Renderer, handle: Image_Id) {
+	image := hm.get(r.shader_resources.images, handle)
+	destroy_image_unsafe(r, image)
+	hm.remove(&r.shader_resources.images, handle)
+}
+
+destroy_image_unsafe :: proc(r: ^Renderer, image: ^GPUImage) {
+	// log.debugf("destroying image %#v", image)
 	vma.destroy_image(r.allocator, image.image, image.allocation)
 	vk.DestroyImageView(r.device.device, image.image_view, nil)
 }

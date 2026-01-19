@@ -9,12 +9,16 @@ import "vendor:stb/image"
 import glfw "vendor:glfw"
 import vk "vendor:vulkan"
 
+import hm "handle_map"
 import vma "thirdparty:odin-vma"
 import vkb "vkbootstrap"
-import hm "handle_map"
 
 MAX_FRAMES_IN_FLIGHT :: 2
 MINIMUM_API_VERSION :: vk.API_VERSION_1_3
+
+Render_Error :: union {
+	vkb.Error,
+}
 
 vk_check :: proc(result: vk.Result, loc := #caller_location) {
 	p := context.assertion_failure_proc
@@ -73,7 +77,7 @@ Renderer :: struct {
 	graphics_pipeline:     vk.Pipeline,
 
 	// gbuffer
-	depth_image:           GPUImage,
+	depth_image:           Image_Id,
 
 	// buffers
 	vertex_buffer:         Buffer_Id,
@@ -235,8 +239,8 @@ init_renderer :: proc(r: ^Renderer) -> (ok: bool) {
 	}
 	vk.UpdateDescriptorSets(r.device.device, 1, &sampler_write, 0, nil)
 
-	tex := load_texture_from_file(r, "textures/texture.jpg") or_return
-	r.textures[0] = tex
+	tex_handle := load_texture_from_file(r, "textures/texture.jpg") or_return
+	tex := hm.get(r.shader_resources.images, tex_handle)
 
 	image_info := vk.DescriptorImageInfo {
 		imageView   = tex.image_view,
@@ -265,12 +269,8 @@ init_renderer :: proc(r: ^Renderer) -> (ok: bool) {
 			{.VERTEX_BUFFER, .SHADER_DEVICE_ADDRESS},
 			{.Host_Access_Sequential_Write, .Mapped},
 		)
-		vert_buf := hm.get(r.shader_resources.buffer_slots, r.vertex_buffer)
-		mem.copy(
-			vert_buf.info.mapped_data,
-			raw_data(vertices),
-			int(vert_buf.info.size),
-		)
+		vert_buf := hm.get(r.shader_resources.buffers, r.vertex_buffer)
+		mem.copy(vert_buf.info.mapped_data, raw_data(vertices), int(vert_buf.info.size))
 		r.index_buffer = create_buffer(
 			r^,
 			u32,
@@ -279,7 +279,7 @@ init_renderer :: proc(r: ^Renderer) -> (ok: bool) {
 			{.INDEX_BUFFER, .SHADER_DEVICE_ADDRESS},
 			{.Host_Access_Sequential_Write, .Mapped},
 		)
-		idx_buf := hm.get(r.shader_resources.buffer_slots, r.index_buffer)
+		idx_buf := hm.get(r.shader_resources.buffers, r.index_buffer)
 		mem.copy(idx_buf.info.mapped_data, raw_data(indices), int(idx_buf.info.size))
 
 		extent := vk.Extent3D{r.swapchain.extent.width, r.swapchain.extent.height, 1}
@@ -296,12 +296,10 @@ init_renderer :: proc(r: ^Renderer) -> (ok: bool) {
 }
 
 destroy_renderer :: proc(r: ^Renderer) {
+	log.debug("begin cleanup")
 	vk.DeviceWaitIdle(r.device.device)
 
-	destroy_image(r, r.textures[0])
-	destroy_image(r, r.depth_image)
-	destroy_buffer(r, r.index_buffer)
-	destroy_buffer(r, r.vertex_buffer)
+	destroy_gpu_resources(r)
 
 	// --- LEAK DETECTION START ---
 	stats: vma.Total_Statistics
@@ -345,8 +343,8 @@ destroy_renderer :: proc(r: ^Renderer) {
 	vkb.destroy_instance(r.instance)
 
 	destroy_glfw_window(r.window)
-	
-	hm.delete(&r.shader_resources.buffer_slots)
+
+	hm.delete(&r.shader_resources.buffers)
 	free(r.shader_resources)
 }
 
@@ -597,9 +595,10 @@ record_command_buffer :: proc(
 		.COLOR_ATTACHMENT_OPTIMAL,
 	)
 
+	depth_image := hm.get(r.shader_resources.images, r.depth_image)
 	transition_vk_image(
 		buffer,
-		r.depth_image.image,
+		depth_image.image,
 		{.EARLY_FRAGMENT_TESTS, .LATE_FRAGMENT_TESTS},
 		{.EARLY_FRAGMENT_TESTS, .LATE_FRAGMENT_TESTS},
 		{},
@@ -628,7 +627,7 @@ record_command_buffer :: proc(
 
 	depth_attachment_info := vk.RenderingAttachmentInfo {
 		sType       = .RENDERING_ATTACHMENT_INFO,
-		imageView   = r.depth_image.image_view,
+		imageView   = depth_image.image_view,
 		imageLayout = .DEPTH_ATTACHMENT_OPTIMAL,
 		loadOp      = .CLEAR,
 		storeOp     = .STORE,
@@ -663,8 +662,8 @@ record_command_buffer :: proc(
 	vk.CmdBindDescriptorSets(buffer, .GRAPHICS, r.pipeline_layout, 0, 1, &r.bindless_set, 0, nil)
 
 	pc := Push_Constants {
-		vertex_buffer_addr = hm.get(r.shader_resources.buffer_slots, r.vertex_buffer).address.?,
-		index_buffer_addr  = hm.get(r.shader_resources.buffer_slots, r.index_buffer).address.?,
+		vertex_buffer_addr = hm.get(r.shader_resources.buffers, r.vertex_buffer).address.?,
+		index_buffer_addr  = hm.get(r.shader_resources.buffers, r.index_buffer).address.?,
 		mvp                = mvp,
 		sampler            = 0,
 		texture            = 0,
@@ -804,7 +803,7 @@ indices :: []u32 {
 // odinfmt: enable
 
 
-load_texture_from_file :: proc(r: ^Renderer, path: cstring) -> (tex: GPUImage, ok: bool) {
+load_texture_from_file :: proc(r: ^Renderer, path: cstring) -> (image_id: Image_Id, ok: bool) {
 	w, h, c: i32
 	pixels := image.load(path, &w, &h, &c, 4)
 	if pixels == nil {
@@ -826,11 +825,12 @@ load_texture_from_file :: proc(r: ^Renderer, path: cstring) -> (tex: GPUImage, o
 		{.Host_Access_Sequential_Write, .Mapped},
 	)
 	defer destroy_buffer(r, staging)
-	stag_buf := hm.get(r.shader_resources.buffer_slots, staging)
+	stag_buf := hm.get(r.shader_resources.buffers, staging)
 	mem.copy(stag_buf.info.mapped_data, pixels, img_size)
 
 	// Create the GPU Image
-	tex = create_image(r^, "texture", .R8G8B8A8_SRGB, extent, {.TRANSFER_DST, .SAMPLED})
+	image_id = create_image(r^, "texture", .R8G8B8A8_SRGB, extent, {.TRANSFER_DST, .SAMPLED})
+	tex := hm.get(r.shader_resources.images, image_id)
 
 	// copy staging -> image
 	cb := begin_immediate_submit(r)
@@ -865,7 +865,7 @@ load_texture_from_file :: proc(r: ^Renderer, path: cstring) -> (tex: GPUImage, o
 
 	end_immediate_submit(r)
 
-	return tex, true
+	return image_id, true
 }
 
 draw_frame :: proc(r: ^Renderer) -> (ok: bool) {

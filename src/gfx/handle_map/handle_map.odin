@@ -85,7 +85,7 @@ Handle :: struct {
 // It will only be used to reserve virtual memory. Actual physical memory is
 // only allocated as the `items` array grows into that reserved memory.
 Handle_Map :: struct($T: typeid, $HT: typeid, $Max: int) {
-	// Each item much have a field `handle` of type `HT`.
+	// Each item must have a field `handle` of type `HT`.
 	//
 	// There's always a "dummy element" at index 0. This way, a Handle with
 	// `idx == 0` means "no Handle".
