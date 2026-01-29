@@ -75,6 +75,13 @@ init_device :: proc(r: ^Renderer) -> (ok: bool) {
 	vkb.physical_device_selector_set_minimum_version(selector, MINIMUM_API_VERSION)
 	vkb.physical_device_selector_set_surface(selector, surface)
 
+	vk10 := vk.PhysicalDeviceFeatures {
+		fragmentStoresAndAtomics = true,
+		vertexPipelineStoresAndAtomics = true,
+		shaderInt64 = true,
+	}
+	vkb.physical_device_selector_set_required_features(selector, vk10)
+
 	vkb_physical_device, vkb_physical_device_err := vkb.physical_device_selector_select(selector)
 	if vkb_physical_device_err != nil {
 		log.errorf("Failed to select physical device: %#v", vkb_physical_device_err)
@@ -113,6 +120,10 @@ init_device :: proc(r: ^Renderer) -> (ok: bool) {
 		// descriptorBindingVariableDescriptorCount     = true,
 		descriptorBindingPartiallyBound              = true,
 		descriptorBindingSampledImageUpdateAfterBind = true,
+		timelineSemaphore = true,
+		vulkanMemoryModel = true,
+		vulkanMemoryModelDeviceScope = true,
+		storageBuffer8BitAccess = true,
 	}
 	vkb.device_builder_add_pnext(device_builder, &vk12)
 

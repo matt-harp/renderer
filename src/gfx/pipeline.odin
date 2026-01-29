@@ -216,3 +216,40 @@ create_graphics_pipeline :: proc(r: ^Renderer) -> (ok: bool) {
 
 	return true
 }
+
+create_compute_pipeline :: proc(r: ^Renderer) -> (ok: bool) {
+	module := load_shader_module(r, "shaders/raymarch.spv") or_return
+	defer vk.DestroyShaderModule(r.device.device, module, nil)
+
+	// Push Constants for Camera Data
+	pc_range := vk.PushConstantRange {
+		stageFlags = {.COMPUTE},
+		offset     = 0,
+		size       = size_of(Compute_Push_Constants),
+	}
+
+	layout_info := vk.PipelineLayoutCreateInfo {
+		sType                  = .PIPELINE_LAYOUT_CREATE_INFO,
+		setLayoutCount         = 1,
+		pSetLayouts            = &r.bindless_layout,
+		pushConstantRangeCount = 1,
+		pPushConstantRanges    = &pc_range,
+	}
+	vk_check(vk.CreatePipelineLayout(r.device.device, &layout_info, nil, &r.compute_layout))
+
+	pipeline_info := vk.ComputePipelineCreateInfo {
+		sType = .COMPUTE_PIPELINE_CREATE_INFO,
+		stage = {
+			sType = .PIPELINE_SHADER_STAGE_CREATE_INFO,
+			stage = {.COMPUTE},
+			module = module,
+			pName = "main",
+		},
+		layout = r.compute_layout,
+	}
+
+	vk_check(
+		vk.CreateComputePipelines(r.device.device, 0, 1, &pipeline_info, nil, &r.compute_pipeline),
+	)
+	return true
+}

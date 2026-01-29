@@ -31,6 +31,8 @@ vk_check :: proc(result: vk.Result, loc := #caller_location) {
 	}
 }
 
+brick_data: [16][16][16]u32
+
 // per-frame data
 Frame_Data :: struct {
 	command_buffer:      vk.CommandBuffer,
@@ -75,22 +77,31 @@ Renderer :: struct {
 	// Assets TODO move to asset manager
 	pipeline_layout:       vk.PipelineLayout,
 	graphics_pipeline:     vk.Pipeline,
+	compute_layout:        vk.PipelineLayout,
+	compute_pipeline:      vk.Pipeline,
 
 	// gbuffer
 	depth_image:           Image_Id,
+	draw_image:            Image_Id,
+	volume_image:            Image_Id,
 
 	// buffers
 	vertex_buffer:         Buffer_Id,
 	index_buffer:          Buffer_Id,
 
 	// resources
-	textures:              [10]GPUImage,
 	samplers:              [3]vk.Sampler,
 
 	// bindless
 	bindless_layout:       vk.DescriptorSetLayout,
 	bindless_pool:         vk.DescriptorPool,
 	bindless_set:          vk.DescriptorSet,
+}
+
+Compute_Push_Constants :: struct {
+	inv_view:  linalg.Matrix4x4f32,
+	inv_proj:  linalg.Matrix4x4f32,
+	inv_model: linalg.Matrix4x4f32,
 }
 
 Push_Constants :: struct {
@@ -257,6 +268,55 @@ init_renderer :: proc(r: ^Renderer) -> (ok: bool) {
 	}
 	vk.UpdateDescriptorSets(r.device.device, 1, &image_write, 0, nil)
 
+	r.draw_image = create_image(
+		r^,
+		"Draw Image",
+		.R16G16B16A16_SFLOAT,
+		{r.swapchain.extent.width, r.swapchain.extent.height, 1},
+		{.TRANSFER_SRC, .TRANSFER_DST, .STORAGE, .COLOR_ATTACHMENT},
+	)
+	draw_image := hm.get(r.shader_resources.images, r.draw_image)
+	draw_image_info := vk.DescriptorImageInfo {
+		imageView   = draw_image.image_view,
+		imageLayout = .GENERAL,
+	}
+
+	write := vk.WriteDescriptorSet {
+		sType           = .WRITE_DESCRIPTOR_SET,
+		dstSet          = r.bindless_set,
+		dstBinding      = 2, // COMPUTE
+		descriptorCount = 1,
+		descriptorType  = .STORAGE_IMAGE,
+		pImageInfo      = &draw_image_info,
+	}
+	vk.UpdateDescriptorSets(r.device.device, 1, &write, 0, nil)
+
+	r.volume_image = create_image(
+		r^,
+		"Volume Image",
+		.R8G8B8A8_SRGB,
+		{16, 16, 16},
+		{.SAMPLED, .TRANSFER_DST},
+		image_type=.D3,
+	)
+	vol_image := hm.get(r.shader_resources.images, r.volume_image)
+	vol_image_info := vk.DescriptorImageInfo {
+		imageView = vol_image.image_view,
+		imageLayout = .READ_ONLY_OPTIMAL,
+	}
+	vol_write := vk.WriteDescriptorSet {
+		sType = .WRITE_DESCRIPTOR_SET,
+		dstSet = r.bindless_set,
+		dstBinding = 3, // VOLUME
+		descriptorCount = 1,
+		descriptorType = .SAMPLED_IMAGE,
+		pImageInfo = &vol_image_info,
+	}
+	vk.UpdateDescriptorSets(r.device.device, 1, &vol_write, 0, nil)
+
+	load_volume(r, r.volume_image) or_return
+
+	create_compute_pipeline(r) or_return
 	create_graphics_pipeline(r) or_return
 
 	// create gbuffers
@@ -350,11 +410,11 @@ destroy_renderer :: proc(r: ^Renderer) {
 
 init_descriptors :: proc(r: ^Renderer) -> (ok: bool) {
 	// 1. Layout Bindings
-	bindings := [2]vk.DescriptorSetLayoutBinding {
+	bindings := []vk.DescriptorSetLayoutBinding {
 		{
 			binding         = 0, // Textures
 			descriptorType  = .SAMPLED_IMAGE,
-			descriptorCount = 1000,
+			descriptorCount = 500,
 			stageFlags      = {.FRAGMENT},
 		},
 		{
@@ -363,41 +423,56 @@ init_descriptors :: proc(r: ^Renderer) -> (ok: bool) {
 			descriptorCount = 1,
 			stageFlags      = {.FRAGMENT},
 		},
+		{
+			binding         = 2, // Compute
+			descriptorType  = .STORAGE_IMAGE,
+			descriptorCount = 1,
+			stageFlags      = {.COMPUTE},
+		},
+		{
+			binding         = 3, // Compute volume image
+			descriptorType  = .SAMPLED_IMAGE,
+			descriptorCount = 1,
+			stageFlags      = {.COMPUTE},
+		},
 	}
 
 	// 2. Flags to allow "Partially Bound" (so you don't need 1000 textures to start)
-	flags := [2]vk.DescriptorBindingFlags {
+	flags := []vk.DescriptorBindingFlags {
 		{.PARTIALLY_BOUND, .UPDATE_AFTER_BIND}, // For textures
 		{}, // For samplers
+		{}, // For compute
+		{},
 	}
 
 	flags_info := vk.DescriptorSetLayoutBindingFlagsCreateInfo {
 		sType         = .DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
-		bindingCount  = 2,
-		pBindingFlags = raw_data(&flags),
+		bindingCount  = u32(len(flags)),
+		pBindingFlags = raw_data(flags),
 	}
 
 	layout_info := vk.DescriptorSetLayoutCreateInfo {
 		sType        = .DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
 		pNext        = &flags_info,
-		bindingCount = 2,
-		pBindings    = &bindings[0],
+		bindingCount = u32(len(bindings)),
+		pBindings    = raw_data(bindings),
 		flags        = {.UPDATE_AFTER_BIND_POOL},
 	}
 	vk.CreateDescriptorSetLayout(r.device.device, &layout_info, nil, &r.bindless_layout)
 
 	// 3. Pool (Must support UPDATE_AFTER_BIND)
-	pool_sizes := [2]vk.DescriptorPoolSize {
+	pool_sizes := []vk.DescriptorPoolSize {
 		{type = .SAMPLED_IMAGE, descriptorCount = 1000},
 		{type = .SAMPLER, descriptorCount = 10},
+		{type = .STORAGE_IMAGE, descriptorCount = 100},
 	}
 
 	pool_info := vk.DescriptorPoolCreateInfo {
 		sType         = .DESCRIPTOR_POOL_CREATE_INFO,
 		flags         = {.UPDATE_AFTER_BIND},
 		maxSets       = 1,
-		poolSizeCount = 2,
-		pPoolSizes    = &pool_sizes[0],
+		poolSizeCount = u32(len(pool_sizes)),
+		pPoolSizes    = raw_data(pool_sizes),
 	}
 	vk.CreateDescriptorPool(r.device.device, &pool_info, nil, &r.bindless_pool)
 
@@ -426,6 +501,7 @@ create_swapchain :: proc(r: ^Renderer, config: SwapchainConfig) -> (ok: bool) {
 	vkb.swapchain_builder_set_desired_extent(builder, config.extent.width, config.extent.height)
 	// Set default surface format and color space: `B8G8R8A8_SRGB, SRGB_NONLINEAR`
 	vkb.swapchain_builder_use_default_format_selection(builder)
+	vkb.swapchain_builder_add_image_usage_flags(builder, {.TRANSFER_DST})
 	vkb.swapchain_builder_set_desired_present_mode(builder, config.present_mode)
 
 	new_swapchain, err := vkb.swapchain_builder_build(builder)
@@ -584,14 +660,95 @@ record_command_buffer :: proc(
 		return
 	}
 
+	draw_image := hm.get(r.shader_resources.images, r.draw_image)
+	transition_vk_image(
+		buffer,
+		draw_image.image,
+		{.TOP_OF_PIPE},
+		{.COMPUTE_SHADER},
+		{},
+		{.SHADER_WRITE},
+		.UNDEFINED,
+		.GENERAL,
+	)
+
+	vk.CmdBindPipeline(buffer, .COMPUTE, r.compute_pipeline)
+	vk.CmdBindDescriptorSets(buffer, .COMPUTE, r.compute_layout, 0, 1, &r.bindless_set, 0, nil)
+	c_pc := Compute_Push_Constants {
+		inv_view  = inv_view,
+		inv_proj  = inv_proj,
+		inv_model = inv_model,
+	}
+	vk.CmdPushConstants(
+		buffer,
+		r.compute_layout,
+		{.COMPUTE},
+		0,
+		size_of(Compute_Push_Constants),
+		&c_pc,
+	)
+	vk.CmdDispatch(
+		buffer,
+		(r.swapchain.extent.width + 15) / 16,
+		(r.swapchain.extent.height + 15) / 16,
+		1,
+	)
+
+	transition_vk_image(
+		buffer,
+		draw_image.image,
+		{.COMPUTE_SHADER},
+		{.TRANSFER},
+		{.SHADER_WRITE},
+		{.TRANSFER_READ},
+		.GENERAL,
+		.TRANSFER_SRC_OPTIMAL,
+	)
+
 	transition_vk_image(
 		buffer,
 		r.swapchain_images[image_index],
-		{.COLOR_ATTACHMENT_OUTPUT},
-		{.COLOR_ATTACHMENT_OUTPUT},
+		{.TOP_OF_PIPE},
+		{.TRANSFER},
 		{},
-		{.COLOR_ATTACHMENT_WRITE},
+		{.TRANSFER_WRITE},
 		.UNDEFINED,
+		.TRANSFER_DST_OPTIMAL,
+	)
+
+	blit_region := vk.ImageBlit2 {
+		sType = .IMAGE_BLIT_2,
+		srcSubresource = {aspectMask = {.COLOR}, layerCount = 1},
+		srcOffsets = {
+			{0, 0, 0},
+			{i32(r.swapchain.extent.width), i32(r.swapchain.extent.height), 1},
+		},
+		dstSubresource = {aspectMask = {.COLOR}, layerCount = 1},
+		dstOffsets = {
+			{0, 0, 0},
+			{i32(r.swapchain.extent.width), i32(r.swapchain.extent.height), 1},
+		},
+	}
+	blit_info := vk.BlitImageInfo2 {
+		sType          = .BLIT_IMAGE_INFO_2,
+		srcImage       = draw_image.image,
+		srcImageLayout = .TRANSFER_SRC_OPTIMAL,
+		dstImage       = r.swapchain_images[image_index],
+		dstImageLayout = .TRANSFER_DST_OPTIMAL,
+		regionCount    = 1,
+		pRegions       = &blit_region,
+		filter         = .LINEAR,
+	}
+	vk.CmdBlitImage2(buffer, &blit_info)
+
+	transition_vk_image(
+		buffer,
+		r.swapchain_images[image_index],
+		{.TRANSFER},
+		{.COLOR_ATTACHMENT_OUTPUT},
+		{.TRANSFER_WRITE},
+		{.COLOR_ATTACHMENT_WRITE},
+		.TRANSFER_DST_OPTIMAL,
 		.COLOR_ATTACHMENT_OPTIMAL,
 	)
 
@@ -616,7 +773,7 @@ record_command_buffer :: proc(
 		sType       = .RENDERING_ATTACHMENT_INFO,
 		imageView   = r.swapchain_image_views[image_index],
 		imageLayout = .COLOR_ATTACHMENT_OPTIMAL,
-		loadOp      = .CLEAR,
+		loadOp      = .LOAD,
 		storeOp     = .STORE,
 		clearValue  = clear_color,
 	}
@@ -746,6 +903,9 @@ end_immediate_submit :: proc(r: ^Renderer) {
 }
 
 mvp: linalg.Matrix4f32
+inv_view: linalg.Matrix4f32
+inv_proj: linalg.Matrix4f32
+inv_model: linalg.Matrix4f32
 
 Vertex :: struct {
 	pos:   [3]f32,
@@ -866,6 +1026,68 @@ load_texture_from_file :: proc(r: ^Renderer, path: cstring) -> (image_id: Image_
 	end_immediate_submit(r)
 
 	return image_id, true
+}
+
+load_volume :: proc(r: ^Renderer, into_image: Image_Id) -> (ok: bool) {
+	for x in 0..<16 {
+		for y in 0..<16 {
+			for z in 0..<16 {
+				brick_data[x][y][z] = transmute(u32)[4]u8{u8(255-x*16),u8(255-y*16),u8(255-z*16),255}
+			}
+		}
+	}
+
+	img_size := int(16 * 16 * 16 * 4)
+	extent := vk.Extent3D{16, 16, 16}
+
+	// Create a staging buffer
+	staging := create_buffer(
+		r^,
+		byte,
+		"volume staging buffer",
+		img_size,
+		{.TRANSFER_SRC},
+		{.Host_Access_Sequential_Write, .Mapped},
+	)
+	defer destroy_buffer(r, staging)
+	stag_buf := hm.get(r.shader_resources.buffers, staging)
+	mem.copy(stag_buf.info.mapped_data, &brick_data, img_size)
+
+	// copy staging -> image
+	cb := begin_immediate_submit(r)
+	img := hm.get(r.shader_resources.images, into_image)
+
+	transition_vk_image(
+		cb,
+		img.image,
+		{.ALL_COMMANDS},
+		{.TRANSFER},
+		{},
+		{.TRANSFER_WRITE},
+		.UNDEFINED,
+		.TRANSFER_DST_OPTIMAL,
+	)
+
+	region := vk.BufferImageCopy {
+		imageSubresource = {aspectMask = {.COLOR}, layerCount = 1},
+		imageExtent = extent,
+	}
+	vk.CmdCopyBufferToImage(cb, stag_buf.buffer, img.image, .TRANSFER_DST_OPTIMAL, 1, &region)
+
+	transition_vk_image(
+		cb,
+		img.image,
+		{.TRANSFER},
+		{.COMPUTE_SHADER},
+		{.TRANSFER_WRITE},
+		{.SHADER_READ},
+		.TRANSFER_DST_OPTIMAL,
+		.SHADER_READ_ONLY_OPTIMAL,
+	)
+
+	end_immediate_submit(r)
+
+	return true
 }
 
 draw_frame :: proc(r: ^Renderer) -> (ok: bool) {

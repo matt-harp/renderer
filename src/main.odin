@@ -6,17 +6,18 @@ import "core:log"
 import "core:math"
 import "core:math/linalg"
 import "core:mem"
+import "base:runtime"
 
 import "gfx"
 
 import glfw "vendor:glfw"
 
-camera_yaw: f32 = 0.0
-camera_pitch: f32 = 0.0
+// Mouse input state
 last_mouse_x: f64 = 0.0
 last_mouse_y: f64 = 0.0
 mouse_held: bool = false
-stick_length: f32 = 4.0
+
+camera: Camera
 
 main :: proc() {
 	when ODIN_DEBUG {
@@ -48,9 +49,9 @@ main :: proc() {
 	gfx.init_renderer(&renderer)
 	defer gfx.destroy_renderer(&renderer)
 
-	// glfw.SetKeyCallback(renderer.window, proc "c" (window: glfw.WindowHandle, key, scancode, action, mods: c.int) {
+	camera_init(&camera)
 
-	// })
+
 	glfw.SetMouseButtonCallback(
 		renderer.window,
 		proc "c" (window: glfw.WindowHandle, button, action, mods: c.int) {
@@ -67,15 +68,11 @@ main :: proc() {
 		renderer.window,
 		proc "c" (window: glfw.WindowHandle, xpos, ypos: f64) {
 			if mouse_held {
-				sensitivity: f32 = 0.2
 				dx := f32(xpos - last_mouse_x)
 				dy := f32(ypos - last_mouse_y)
 
-				camera_yaw += dx * sensitivity
-				camera_pitch += dy * sensitivity
-
-				// Constrain pitch to avoid flipping over the poles
-				camera_pitch = linalg.clamp(camera_pitch, -89.0, 89.0)
+				context = runtime.default_context()
+				camera_handle_mouse(&camera, dx, dy)
 			}
 			last_mouse_x = xpos
 			last_mouse_y = ypos
@@ -83,28 +80,33 @@ main :: proc() {
 	)
 
 	width, height := glfw.GetWindowSize(renderer.window)
+	last_time := glfw.GetTime()
+
 	for !glfw.WindowShouldClose(renderer.window) {
 		glfw.PollEvents()
-		// time := glfw.GetTime()
+		time := glfw.GetTime()
+		delta_time := f32(time - last_time)
+		last_time = time
 
-		yaw_rad := camera_yaw * (math.PI / 180.0)
-		pitch_rad := camera_pitch * (math.PI / 180.0)
+		camera_update(&camera, renderer.window, delta_time)
+
+		view := camera_get_view_matrix(&camera)
 
 		model :=
-			// linalg.matrix4_rotate_f32(5 * rotate * (math.PI / 180.0), {0, 1, 0}) *
+			linalg.matrix4_rotate_f32(f32(time) * 0.5, {0, 1, 0}) *
 			linalg.matrix4_scale_f32({1, 1, 1})
-
-		view := linalg.matrix4_translate_f32({0, 0, -stick_length}) * linalg.matrix4_rotate_f32(pitch_rad, {1, 0, 0}) * linalg.matrix4_rotate_f32(yaw_rad, {0, 1, 0})
 
 		aspect := f32(width) / f32(height)
 
-		proj := gfx.matrix4_perspective_f32(45.0 * (math.PI / 180.0), aspect, 0.1, 5.0)
+		proj := gfx.matrix4_perspective_f32(camera.fov * (math.PI / 180.0), aspect, camera.near, camera.far)
 
 		gfx.mvp = proj * view * model
+		gfx.inv_view = linalg.inverse(view)
+		gfx.inv_proj = linalg.inverse(proj)
+		gfx.inv_model = linalg.inverse(model)
 
 		if ok := gfx.draw_frame(&renderer); !ok {
 			log.errorf("Failed to draw frame.")
 			break
 		}
-	}
-}
+	}}
