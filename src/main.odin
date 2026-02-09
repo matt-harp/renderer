@@ -93,7 +93,7 @@ main :: proc() {
 		view := camera_get_view_matrix(&camera)
 
 		model :=
-			linalg.matrix4_rotate_f32(f32(time) * 0.5, {0, 1, 0}) *
+			// linalg.matrix4_rotate_f32(f32(time) * 0.5, {0, 1, 0}) *
 			linalg.matrix4_scale_f32({1, 1, 1})
 
 		aspect := f32(width) / f32(height)
@@ -102,8 +102,9 @@ main :: proc() {
 
 		gfx.mvp = proj * view * model
 		gfx.inv_view = linalg.inverse(view)
-		gfx.inv_proj = linalg.inverse(proj)
+		gfx.inv_proj = linalg.inverse(proj * view)
 		gfx.inv_model = linalg.inverse(model)
+		gfx.camera_origin = camera.pos
 
 		if ok := gfx.draw_frame(&renderer); !ok {
 			log.errorf("Failed to draw frame.")

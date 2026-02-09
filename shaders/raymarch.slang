@@ -1,15 +1,23 @@
+import shaders.core;
+
 [[vk::binding(2, 0)]] RWTexture2D<float4> drawImage;
-[[vk::binding(3, 0)]] Texture3D<float4> volumeImage;
 
-struct PushConstants {
-    float4x4 invView;
-    float4x4 invProj;
-    float4x4 invModel;
+struct SVONode {
+    uint data;  // child_ptr or color
+    uint masks; // valid_mask | leaf_mask << 8
 };
-[[vk::push_constant]] PushConstants pc;
+[[vk::binding(3, 0)]] StructuredBuffer<SVONode> svoBuffer;
 
-// Helper: Standard Ray-Box Intersection
-// Returns (tNear, tFar). If tNear > tFar, we missed.
+struct DispatchParams {
+    float4x4 invView;
+    float4x4 InvProjMat;
+    float4x4 invModel;
+    float3 CameraOrigin;
+    TextureHandle2D OutputAlbedoTex;
+};
+[[vk::push_constant]] DispatchParams pc;
+
+// Helper: Ray-AABB Intersection
 float2 intersectAABB(float3 ro, float3 rd, float3 boxMin, float3 boxMax) {
     float3 tMin = (boxMin - ro) / rd;
     float3 tMax = (boxMax - ro) / rd;
@@ -20,102 +28,143 @@ float2 intersectAABB(float3 ro, float3 rd, float3 boxMin, float3 boxMax) {
     return float2(tNear, tFar);
 }
 
+// Unpacks 8-bit color to float4
+float4 unpackColor(uint c) {
+    return float4(
+        float(c & 0xFF),
+        float((c >> 8) & 0xFF),
+        float((c >> 16) & 0xFF),
+        float(c >> 24)
+    ) / 255.0;
+}
+
+void GetPrimaryRay(int2 screenPos, out float3 rayPos, out float3 rayDir) {
+	// nit: UV re-scaling and anti-alias jitter can be pre-baked in the matrix.
+    float2 uv = (screenPos + 0.5) / float2(drawImage.Size);
+    uv = uv * 2 - 1;
+    float4 far = mul(pc.InvProjMat, float4(uv, 1, 1));
+    rayDir = normalize(far.xyz / far.w);
+    rayPos = pc.CameraOrigin;
+}
+
+struct HitInfo {
+	bool Hit;
+}
+
 [shader("compute")]
 [numthreads(16, 16, 1)]
-void main(uint3 dispatchID : SV_DispatchThreadID) {
-    int2 texCoord = int2(dispatchID.xy);
-    int2 size;
-    drawImage.GetDimensions(size.x, size.y);
+void main(uint2 screenPos : SV_DispatchThreadID) {
+    int2 outputSize;
+    drawImage.GetDimensions(outputSize.x, outputSize.y);
+    if (any(screenPos >= outputSize)) return;
 
-    if (texCoord.x >= size.x || texCoord.y >= size.y) return;
+    float3 rayPosWorld, rayDirWorld;
+    GetPrimaryRay(screenPos, rayPosWorld, rayDirWorld);
 
-    // --- 1. RAY SETUP ---
-    float2 uv = (float2(texCoord) / float2(size)) * 2.0 - 1.0; // NDC
 
-    // Unproject: Screen Space -> View Space -> World Space -> Local Space
-    float4 target = mul(pc.invProj, float4(uv.x, uv.y, 0.0, 1.0));
-    float3 viewDir = target.xyz / target.w;
-    
-    float3 rayDirWorld = normalize(mul((float3x3)pc.invView, viewDir));
-    float3 rayPosWorld = mul(pc.invView, float4(0, 0, 0, 1)).xyz;
-
+    // Transform to Model Space (where SVO is defined in [-1, 1])
     float3 rayDir = normalize(mul((float3x3)pc.invModel, rayDirWorld));
     float3 rayPos = mul(pc.invModel, float4(rayPosWorld, 1.0)).xyz;
 
-    // Define the Volume Bounds in Local Space
-    uint3 dim;
-    volumeImage.GetDimensions(dim.x, dim.y, dim.z);
-    float3 boxMin = float3(0, 0, 0);
-    float3 boxMax = float3(dim.x, dim.y, dim.z);
+    float3 finalColor = float3(0.05, 0.05, 0.1); // Background
 
-    // --- 2. INTERSECTION CHECK ---
-    float2 tBox = intersectAABB(rayPos, rayDir, boxMin, boxMax);
-    float tNear = max(0.0, tBox.x);
-    float tFar = tBox.y;
+    // --- SVO Traversal ---
+    struct StackEntry {
+        uint nodeIndex;
+        float3 pos;
+        float size;
+    };
 
-    float3 finalColor = float3(0.05, 0.05, 0.1); // Sky color
+    // Intersect Root Box [-1, 1]
+    float2 tBox = intersectAABB(rayPos, rayDir, float3(-1, -1, -1), float3(1, 1, 1));
+    float tMin = max(0.0, tBox.x);
+    float tMax = tBox.y;
 
-    // Only run DDA if we hit the box
-    if (tNear < tFar) {
-        // --- 3. DDA SETUP ---
-        // Move ray start to the entry point of the volume (in local space)
-        float3 volPos = rayPos + rayDir * tNear;
+    if (tMin < tMax) {
+        // Fixed stack for SVO traversal
+        // Depth 8-10 is sufficient for testing
+        StackEntry stack[12];
+        int stackPtr = 0;
 
-        // Current Voxel Coordinate
-        int3 mapPos = int3(floor(volPos));
+        // Push Root
+        stack[0].nodeIndex = 0;
+        stack[0].pos = float3(0, 0, 0);
+        stack[0].size = 2.0;
+        stackPtr++;
 
-        // Ray Direction sign (+1 or -1)
-        int3 step = int3(sign(rayDir));
+        bool hit = false;
+        while (stackPtr > 0 && !hit) {
+            stackPtr--;
+            StackEntry current = stack[stackPtr];
 
-        // Distance ray must travel to cross 1 unit in X/Y/Z
-        float3 deltaDist = abs(1.0 / rayDir);
+            // Check intersection with current node to be safe,
+            // though logic guarantees we only push intersected nodes.
+            // This re-check can handle near-plane clipping or precision issues if needed.
 
-        // Distance to the NEXT boundary for X/Y/Z
-        float3 sideDist;
-        sideDist.x = (rayDir.x < 0) ? (volPos.x - mapPos.x) * deltaDist.x : (mapPos.x + 1.0 - volPos.x) * deltaDist.x;
-        sideDist.y = (rayDir.y < 0) ? (volPos.y - mapPos.y) * deltaDist.y : (mapPos.y + 1.0 - volPos.y) * deltaDist.y;
-        sideDist.z = (rayDir.z < 0) ? (volPos.z - mapPos.z) * deltaDist.z : (mapPos.z + 1.0 - volPos.z) * deltaDist.z;
+            SVONode node = svoBuffer[current.nodeIndex];
+            uint masks = node.masks;
+            uint validMask = masks & 0xFF;
+            uint leafMask = (masks >> 8) & 0xFF;
 
-        // Clamp mapPos to be inside just in case float precision put us slightly off
-        mapPos = clamp(mapPos, int3(0), int3(dim) - 1);
+            if (validMask == 0) continue;
 
-        // --- 4. DDA LOOP ---
-        // Max steps roughly equal to diagonal of volume
-        for (int i = 0; i < 512; i++) {
-            // Check if we are still inside the volume
-            if (any(mapPos < 0) || any(mapPos >= int3(dim))) break;
+            uint firstChild = node.data;
+            float quarterSize = current.size * 0.25;
 
-            // Fetch Voxel Data (Integer Load)
-            float4 voxel = volumeImage.Load(int4(mapPos, 0));
+            float3 offsets[8] = {
+                float3(-1, -1, -1), float3(1, -1, -1), float3(-1, 1, -1), float3(1, 1, -1),
+                float3(-1, -1, 1), float3(1, -1, 1), float3(-1, 1, 1), float3(1, 1, 1)
+            };
 
-            // If opaque enough, we hit!
-            if (voxel.a > 0.1) {
-                // Calculate Normal based on which face we hit
-                // (We know this from the last step taken, or by re-deriving sideDist)
-                // Simple trick: The normal is -rayDir projected onto the dominant axis
-                // But typically you track which axis 'step' happened last.
-                // For visualization, let's just use the voxel color directly.
+            // Determine traversal order based on ray direction to traverse Front-to-Back.
+            int mask = 0;
+            if (rayDir.x < 0) mask |= 1;
+            if (rayDir.y < 0) mask |= 2;
+            if (rayDir.z < 0) mask |= 4;
 
-                // Add simple lighting (dot product with "up")
-                float light = 0.5 + 0.5 * voxel.g; // Fake lighting
-                finalColor = voxel.rgb;
-                break;
-            }
+            // We want to POP the closest child first.
+            // Stack is LIFO. So we PUSH the farthest child first.
+            // The XOR sequence 0..7 ^ mask visits children in spatial order (e.g. 0 is min corner).
+            // If we iterate i from 7 down to 0, and apply XOR, we process "Back-to-Front" relative to ray.
 
-            // --- 5. STEP FORWARD ---
-            // "Which axis is closest to a boundary?"
-            if (sideDist.x < sideDist.y && sideDist.x < sideDist.z) {
-                sideDist.x += deltaDist.x;
-                mapPos.x += step.x;
-            } else if (sideDist.y < sideDist.z) {
-                sideDist.y += deltaDist.y;
-                mapPos.y += step.y;
-            } else {
-                sideDist.z += deltaDist.z;
-                mapPos.z += step.z;
+            for (int i = 7; i >= 0; i--) {
+                int idx = i ^ mask;
+
+                 // If child doesn't exist, skip
+                 if ((validMask & (1 << idx)) == 0) continue;
+
+                 // Calculate child index
+                 // We count how many valid bits are before our bit index
+                 uint childOffset = countbits(validMask & ((1 << idx) - 1));
+                 uint childIndex = firstChild + childOffset;
+
+                 float3 childPos = current.pos + offsets[idx] * quarterSize;
+
+                 // Intersect Child
+                 float2 tC = intersectAABB(rayPos, rayDir, childPos - quarterSize, childPos + quarterSize);
+
+                 // If hit
+                 if (tC.x <= tC.y && tC.y >= 0) {
+                     if ((leafMask & (1 << idx)) != 0) {
+                         // It is a leaf.
+                         // Since we traverse front-to-back, the first leaf we pop is the hit.
+                         SVONode leafNode = svoBuffer[childIndex];
+                         finalColor = unpackColor(leafNode.data).rgb;
+                         hit = true;
+                         break;
+                     } else {
+                         // Internal Node -> Push
+                         if (stackPtr < 12) {
+                             stack[stackPtr].nodeIndex = childIndex;
+                             stack[stackPtr].pos = childPos;
+                             stack[stackPtr].size = current.size * 0.5;
+                             stackPtr++;
+                         }
+                     }
+                 }
             }
         }
     }
 
-    drawImage[texCoord] = float4(finalColor, 1.0);
+    drawImage[screenPos] = float4(finalColor, 1.0);
 }

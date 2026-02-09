@@ -31,8 +31,6 @@ vk_check :: proc(result: vk.Result, loc := #caller_location) {
 	}
 }
 
-brick_data: [16][16][16]u32
-
 // per-frame data
 Frame_Data :: struct {
 	command_buffer:      vk.CommandBuffer,
@@ -83,7 +81,7 @@ Renderer :: struct {
 	// gbuffer
 	depth_image:           Image_Id,
 	draw_image:            Image_Id,
-	volume_image:            Image_Id,
+	svo_buffer:            Buffer_Id,
 
 	// buffers
 	vertex_buffer:         Buffer_Id,
@@ -102,6 +100,7 @@ Compute_Push_Constants :: struct {
 	inv_view:  linalg.Matrix4x4f32,
 	inv_proj:  linalg.Matrix4x4f32,
 	inv_model: linalg.Matrix4x4f32,
+	camera_origin: [3]f32,
 }
 
 Push_Constants :: struct {
@@ -291,30 +290,22 @@ init_renderer :: proc(r: ^Renderer) -> (ok: bool) {
 	}
 	vk.UpdateDescriptorSets(r.device.device, 1, &write, 0, nil)
 
-	r.volume_image = create_image(
-		r^,
-		"Volume Image",
-		.R8G8B8A8_SRGB,
-		{16, 16, 16},
-		{.SAMPLED, .TRANSFER_DST},
-		image_type=.D3,
-	)
-	vol_image := hm.get(r.shader_resources.images, r.volume_image)
-	vol_image_info := vk.DescriptorImageInfo {
-		imageView = vol_image.image_view,
-		imageLayout = .READ_ONLY_OPTIMAL,
+	load_svo(r) or_return
+	svo_buf := hm.get(r.shader_resources.buffers, r.svo_buffer)
+	svo_info := vk.DescriptorBufferInfo {
+		buffer = svo_buf.buffer,
+		offset = 0,
+		range  = vk.DeviceSize(vk.WHOLE_SIZE),
 	}
-	vol_write := vk.WriteDescriptorSet {
+	svo_write := vk.WriteDescriptorSet {
 		sType = .WRITE_DESCRIPTOR_SET,
 		dstSet = r.bindless_set,
-		dstBinding = 3, // VOLUME
+		dstBinding = 3, // SVO
 		descriptorCount = 1,
-		descriptorType = .SAMPLED_IMAGE,
-		pImageInfo = &vol_image_info,
+		descriptorType = .STORAGE_BUFFER,
+		pBufferInfo = &svo_info,
 	}
-	vk.UpdateDescriptorSets(r.device.device, 1, &vol_write, 0, nil)
-
-	load_volume(r, r.volume_image) or_return
+	vk.UpdateDescriptorSets(r.device.device, 1, &svo_write, 0, nil)
 
 	create_compute_pipeline(r) or_return
 	create_graphics_pipeline(r) or_return
@@ -430,8 +421,8 @@ init_descriptors :: proc(r: ^Renderer) -> (ok: bool) {
 			stageFlags      = {.COMPUTE},
 		},
 		{
-			binding         = 3, // Compute volume image
-			descriptorType  = .SAMPLED_IMAGE,
+			binding         = 3, // SVO Buffer
+			descriptorType  = .STORAGE_BUFFER,
 			descriptorCount = 1,
 			stageFlags      = {.COMPUTE},
 		},
@@ -441,8 +432,8 @@ init_descriptors :: proc(r: ^Renderer) -> (ok: bool) {
 	flags := []vk.DescriptorBindingFlags {
 		{.PARTIALLY_BOUND, .UPDATE_AFTER_BIND}, // For textures
 		{}, // For samplers
-		{}, // For compute
-		{},
+		{}, // For compute draw image
+		{}, // For SVO buffer
 	}
 
 	flags_info := vk.DescriptorSetLayoutBindingFlagsCreateInfo {
@@ -465,6 +456,7 @@ init_descriptors :: proc(r: ^Renderer) -> (ok: bool) {
 		{type = .SAMPLED_IMAGE, descriptorCount = 1000},
 		{type = .SAMPLER, descriptorCount = 10},
 		{type = .STORAGE_IMAGE, descriptorCount = 100},
+		{type = .STORAGE_BUFFER, descriptorCount = 100}, // Added for SVO
 	}
 
 	pool_info := vk.DescriptorPoolCreateInfo {
@@ -675,9 +667,10 @@ record_command_buffer :: proc(
 	vk.CmdBindPipeline(buffer, .COMPUTE, r.compute_pipeline)
 	vk.CmdBindDescriptorSets(buffer, .COMPUTE, r.compute_layout, 0, 1, &r.bindless_set, 0, nil)
 	c_pc := Compute_Push_Constants {
-		inv_view  = inv_view,
-		inv_proj  = inv_proj,
-		inv_model = inv_model,
+		inv_view      = inv_view,
+		inv_proj      = inv_proj,
+		inv_model     = inv_model,
+		camera_origin = camera_origin,
 	}
 	vk.CmdPushConstants(
 		buffer,
@@ -906,6 +899,7 @@ mvp: linalg.Matrix4f32
 inv_view: linalg.Matrix4f32
 inv_proj: linalg.Matrix4f32
 inv_model: linalg.Matrix4f32
+camera_origin: [3]f32
 
 Vertex :: struct {
 	pos:   [3]f32,
@@ -1028,64 +1022,24 @@ load_texture_from_file :: proc(r: ^Renderer, path: cstring) -> (image_id: Image_
 	return image_id, true
 }
 
-load_volume :: proc(r: ^Renderer, into_image: Image_Id) -> (ok: bool) {
-	for x in 0..<16 {
-		for y in 0..<16 {
-			for z in 0..<16 {
-				brick_data[x][y][z] = transmute(u32)[4]u8{u8(255-x*16),u8(255-y*16),u8(255-z*16),255}
-			}
-		}
-	}
+load_svo :: proc(r: ^Renderer) -> (ok: bool) {
+	nodes := build_test_svo(context.allocator)
+	defer delete(nodes)
 
-	img_size := int(16 * 16 * 16 * 4)
-	extent := vk.Extent3D{16, 16, 16}
+	buffer_size := len(nodes) * size_of(SVONode)
 
-	// Create a staging buffer
-	staging := create_buffer(
+	r.svo_buffer = create_buffer(
 		r^,
-		byte,
-		"volume staging buffer",
-		img_size,
-		{.TRANSFER_SRC},
+		SVONode,
+		"SVO Buffer",
+		len(nodes),
+		{.STORAGE_BUFFER, .TRANSFER_DST},
 		{.Host_Access_Sequential_Write, .Mapped},
 	)
-	defer destroy_buffer(r, staging)
-	stag_buf := hm.get(r.shader_resources.buffers, staging)
-	mem.copy(stag_buf.info.mapped_data, &brick_data, img_size)
 
-	// copy staging -> image
-	cb := begin_immediate_submit(r)
-	img := hm.get(r.shader_resources.images, into_image)
-
-	transition_vk_image(
-		cb,
-		img.image,
-		{.ALL_COMMANDS},
-		{.TRANSFER},
-		{},
-		{.TRANSFER_WRITE},
-		.UNDEFINED,
-		.TRANSFER_DST_OPTIMAL,
-	)
-
-	region := vk.BufferImageCopy {
-		imageSubresource = {aspectMask = {.COLOR}, layerCount = 1},
-		imageExtent = extent,
-	}
-	vk.CmdCopyBufferToImage(cb, stag_buf.buffer, img.image, .TRANSFER_DST_OPTIMAL, 1, &region)
-
-	transition_vk_image(
-		cb,
-		img.image,
-		{.TRANSFER},
-		{.COMPUTE_SHADER},
-		{.TRANSFER_WRITE},
-		{.SHADER_READ},
-		.TRANSFER_DST_OPTIMAL,
-		.SHADER_READ_ONLY_OPTIMAL,
-	)
-
-	end_immediate_submit(r)
+	// Upload data
+	svo_buf := hm.get(r.shader_resources.buffers, r.svo_buffer)
+	mem.copy(svo_buf.info.mapped_data, raw_data(nodes), buffer_size)
 
 	return true
 }

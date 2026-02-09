@@ -113,7 +113,7 @@ create_graphics_pipeline :: proc(r: ^Renderer) -> (ok: bool) {
 	rasteriser := vk.PipelineRasterizationStateCreateInfo {
 		sType                   = .PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
 		depthClampEnable        = false,
-		rasterizerDiscardEnable = false,
+		rasterizerDiscardEnable = true,
 		polygonMode             = .FILL,
 		lineWidth               = 1.0,
 		cullMode                = {.BACK},
