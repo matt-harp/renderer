@@ -26,28 +26,34 @@ camera_init :: proc(
 	cam.fov = fov
 	cam.near = near
 	cam.far = far
-	cam.move_speed = 10.0
+	cam.move_speed = 100.0
 	cam.sensitivity = 0.2
 }
 
-camera_get_view_matrix :: proc(cam: ^Camera) -> linalg.Matrix4f32 {
+camera_get_view_matrix :: proc(cam: ^Camera, translate_to_view := true) -> linalg.Matrix4f32 {
 	yaw_rad := cam.yaw * (math.PI / 180.0)
 	pitch_rad := cam.pitch * (math.PI / 180.0)
 
 	// The view matrix is the inverse of the camera's transformation matrix
 	// camera_transform = translation * rotation_yaw * rotation_pitch
 	// view = inverse(camera_transform) = inverse(rotation_pitch) * inverse(rotation_yaw) * inverse(translation)
-	rotation := linalg.matrix4_rotate_f32(pitch_rad, {1, 0, 0}) * linalg.matrix4_rotate_f32(yaw_rad, {0, 1, 0})
+	rotation :=
+		linalg.matrix4_rotate_f32(pitch_rad, {1, 0, 0}) *
+		linalg.matrix4_rotate_f32(yaw_rad, {0, 1, 0})
 	translation := linalg.matrix4_translate_f32({-cam.pos.x, -cam.pos.y, -cam.pos.z})
 
-	return rotation * translation
+	if translate_to_view {
+		return rotation * translation
+	} else {
+		return rotation
+	}
 }
 
 camera_get_forward :: proc(cam: ^Camera) -> linalg.Vector3f32 {
 	yaw_rad := cam.yaw * (math.PI / 180.0)
 	pitch_rad := cam.pitch * (math.PI / 180.0)
 
-	return linalg.Vector3f32{
+	return linalg.Vector3f32 {
 		math.sin(yaw_rad) * math.cos(pitch_rad),
 		-math.sin(pitch_rad),
 		-math.cos(yaw_rad) * math.cos(pitch_rad),

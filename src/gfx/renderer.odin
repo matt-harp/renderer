@@ -97,10 +97,9 @@ Renderer :: struct {
 }
 
 Compute_Push_Constants :: struct {
-	inv_view:  linalg.Matrix4x4f32,
-	inv_proj:  linalg.Matrix4x4f32,
-	inv_model: linalg.Matrix4x4f32,
-	camera_origin: [3]f32,
+	inv_proj:       linalg.Matrix4x4f32,
+	camera_origin:  [3]f32,
+	output_texture: u32,
 }
 
 Push_Constants :: struct {
@@ -232,40 +231,40 @@ init_renderer :: proc(r: ^Renderer) -> (ok: bool) {
 
 	init_descriptors(r) or_return
 
-	sampler := create_sampler(r^)
-	r.samplers[0] = sampler
+	// sampler := create_sampler(r^)
+	// r.samplers[0] = sampler
 
-	sampler_info := vk.DescriptorImageInfo {
-		sampler = sampler,
-	}
-	sampler_write := vk.WriteDescriptorSet {
-		sType           = .WRITE_DESCRIPTOR_SET,
-		dstSet          = r.bindless_set,
-		dstBinding      = 1,
-		dstArrayElement = 0,
-		descriptorCount = 1,
-		descriptorType  = .SAMPLER,
-		pImageInfo      = &sampler_info,
-	}
-	vk.UpdateDescriptorSets(r.device.device, 1, &sampler_write, 0, nil)
+	// sampler_info := vk.DescriptorImageInfo {
+	// 	sampler = sampler,
+	// }
+	// sampler_write := vk.WriteDescriptorSet {
+	// 	sType           = .WRITE_DESCRIPTOR_SET,
+	// 	dstSet          = r.bindless_set,
+	// 	dstBinding      = 1,
+	// 	dstArrayElement = 0,
+	// 	descriptorCount = 1,
+	// 	descriptorType  = .SAMPLER,
+	// 	pImageInfo      = &sampler_info,
+	// }
+	// vk.UpdateDescriptorSets(r.device.device, 1, &sampler_write, 0, nil)
 
-	tex_handle := load_texture_from_file(r, "textures/texture.jpg") or_return
-	tex := hm.get(r.shader_resources.images, tex_handle)
+	// tex_handle := load_texture_from_file(r, "textures/texture.jpg") or_return
+	// tex := hm.get(r.shader_resources.images, tex_handle)
 
-	image_info := vk.DescriptorImageInfo {
-		imageView   = tex.image_view,
-		imageLayout = .SHADER_READ_ONLY_OPTIMAL,
-	}
-	image_write := vk.WriteDescriptorSet {
-		sType           = .WRITE_DESCRIPTOR_SET,
-		dstSet          = r.bindless_set,
-		dstBinding      = 0,
-		dstArrayElement = 0,
-		descriptorType  = .SAMPLED_IMAGE,
-		descriptorCount = 1,
-		pImageInfo      = &image_info,
-	}
-	vk.UpdateDescriptorSets(r.device.device, 1, &image_write, 0, nil)
+	// image_info := vk.DescriptorImageInfo {
+	// 	imageView   = tex.image_view,
+	// 	imageLayout = .SHADER_READ_ONLY_OPTIMAL,
+	// }
+	// image_write := vk.WriteDescriptorSet {
+	// 	sType           = .WRITE_DESCRIPTOR_SET,
+	// 	dstSet          = r.bindless_set,
+	// 	dstBinding      = 0,
+	// 	dstArrayElement = 0,
+	// 	descriptorType  = .SAMPLED_IMAGE,
+	// 	descriptorCount = 1,
+	// 	pImageInfo      = &image_info,
+	// }
+	// vk.UpdateDescriptorSets(r.device.device, 1, &image_write, 0, nil)
 
 	r.draw_image = create_image(
 		r^,
@@ -283,32 +282,15 @@ init_renderer :: proc(r: ^Renderer) -> (ok: bool) {
 	write := vk.WriteDescriptorSet {
 		sType           = .WRITE_DESCRIPTOR_SET,
 		dstSet          = r.bindless_set,
-		dstBinding      = 2, // COMPUTE
+		dstBinding      = 1, // RW texture
 		descriptorCount = 1,
 		descriptorType  = .STORAGE_IMAGE,
 		pImageInfo      = &draw_image_info,
 	}
 	vk.UpdateDescriptorSets(r.device.device, 1, &write, 0, nil)
 
-	load_svo(r) or_return
-	svo_buf := hm.get(r.shader_resources.buffers, r.svo_buffer)
-	svo_info := vk.DescriptorBufferInfo {
-		buffer = svo_buf.buffer,
-		offset = 0,
-		range  = vk.DeviceSize(vk.WHOLE_SIZE),
-	}
-	svo_write := vk.WriteDescriptorSet {
-		sType = .WRITE_DESCRIPTOR_SET,
-		dstSet = r.bindless_set,
-		dstBinding = 3, // SVO
-		descriptorCount = 1,
-		descriptorType = .STORAGE_BUFFER,
-		pBufferInfo = &svo_info,
-	}
-	vk.UpdateDescriptorSets(r.device.device, 1, &svo_write, 0, nil)
-
 	create_compute_pipeline(r) or_return
-	create_graphics_pipeline(r) or_return
+	// create_graphics_pipeline(r) or_return
 
 	// create gbuffers
 	{
@@ -403,38 +385,20 @@ init_descriptors :: proc(r: ^Renderer) -> (ok: bool) {
 	// 1. Layout Bindings
 	bindings := []vk.DescriptorSetLayoutBinding {
 		{
-			binding         = 0, // Textures
+			binding         = 0, // RO Texture Heap
 			descriptorType  = .SAMPLED_IMAGE,
-			descriptorCount = 500,
-			stageFlags      = {.FRAGMENT},
-		},
-		{
-			binding         = 1, // Samplers
-			descriptorType  = .SAMPLER,
-			descriptorCount = 1,
-			stageFlags      = {.FRAGMENT},
-		},
-		{
-			binding         = 2, // Compute
-			descriptorType  = .STORAGE_IMAGE,
-			descriptorCount = 1,
+			descriptorCount = 128,
 			stageFlags      = {.COMPUTE},
 		},
 		{
-			binding         = 3, // SVO Buffer
-			descriptorType  = .STORAGE_BUFFER,
-			descriptorCount = 1,
+			binding         = 1, // RW Texture Heap
+			descriptorType  = .STORAGE_IMAGE,
+			descriptorCount = 128,
 			stageFlags      = {.COMPUTE},
 		},
 	}
 
-	// 2. Flags to allow "Partially Bound" (so you don't need 1000 textures to start)
-	flags := []vk.DescriptorBindingFlags {
-		{.PARTIALLY_BOUND, .UPDATE_AFTER_BIND}, // For textures
-		{}, // For samplers
-		{}, // For compute draw image
-		{}, // For SVO buffer
-	}
+	flags := []vk.DescriptorBindingFlags{{}, {}}
 
 	flags_info := vk.DescriptorSetLayoutBindingFlagsCreateInfo {
 		sType         = .DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
@@ -447,16 +411,14 @@ init_descriptors :: proc(r: ^Renderer) -> (ok: bool) {
 		pNext        = &flags_info,
 		bindingCount = u32(len(bindings)),
 		pBindings    = raw_data(bindings),
-		flags        = {.UPDATE_AFTER_BIND_POOL},
+		flags        = {}, // .UPDATE_AFTER_BIND_POOL
 	}
 	vk.CreateDescriptorSetLayout(r.device.device, &layout_info, nil, &r.bindless_layout)
 
 	// 3. Pool (Must support UPDATE_AFTER_BIND)
 	pool_sizes := []vk.DescriptorPoolSize {
-		{type = .SAMPLED_IMAGE, descriptorCount = 1000},
-		{type = .SAMPLER, descriptorCount = 10},
-		{type = .STORAGE_IMAGE, descriptorCount = 100},
-		{type = .STORAGE_BUFFER, descriptorCount = 100}, // Added for SVO
+		{type = .SAMPLED_IMAGE, descriptorCount = 1024},
+		{type = .STORAGE_IMAGE, descriptorCount = 1024},
 	}
 
 	pool_info := vk.DescriptorPoolCreateInfo {
@@ -667,10 +629,9 @@ record_command_buffer :: proc(
 	vk.CmdBindPipeline(buffer, .COMPUTE, r.compute_pipeline)
 	vk.CmdBindDescriptorSets(buffer, .COMPUTE, r.compute_layout, 0, 1, &r.bindless_set, 0, nil)
 	c_pc := Compute_Push_Constants {
-		inv_view      = inv_view,
-		inv_proj      = inv_proj,
-		inv_model     = inv_model,
-		camera_origin = camera_origin,
+		inv_proj       = inv_proj,
+		camera_origin  = camera_origin,
+		output_texture = 0,
 	}
 	vk.CmdPushConstants(
 		buffer,
@@ -734,105 +695,105 @@ record_command_buffer :: proc(
 	}
 	vk.CmdBlitImage2(buffer, &blit_info)
 
-	transition_vk_image(
-		buffer,
-		r.swapchain_images[image_index],
-		{.TRANSFER},
-		{.COLOR_ATTACHMENT_OUTPUT},
-		{.TRANSFER_WRITE},
-		{.COLOR_ATTACHMENT_WRITE},
-		.TRANSFER_DST_OPTIMAL,
-		.COLOR_ATTACHMENT_OPTIMAL,
-	)
+	// transition_vk_image(
+	// 	buffer,
+	// 	r.swapchain_images[image_index],
+	// 	{.TRANSFER},
+	// 	{.COLOR_ATTACHMENT_OUTPUT},
+	// 	{.TRANSFER_WRITE},
+	// 	{.COLOR_ATTACHMENT_WRITE},
+	// 	.TRANSFER_DST_OPTIMAL,
+	// 	.COLOR_ATTACHMENT_OPTIMAL,
+	// )
 
-	depth_image := hm.get(r.shader_resources.images, r.depth_image)
-	transition_vk_image(
-		buffer,
-		depth_image.image,
-		{.EARLY_FRAGMENT_TESTS, .LATE_FRAGMENT_TESTS},
-		{.EARLY_FRAGMENT_TESTS, .LATE_FRAGMENT_TESTS},
-		{},
-		{.DEPTH_STENCIL_ATTACHMENT_WRITE},
-		.UNDEFINED,
-		.DEPTH_ATTACHMENT_OPTIMAL,
-		{.DEPTH},
-	)
+	// depth_image := hm.get(r.shader_resources.images, r.depth_image)
+	// transition_vk_image(
+	// 	buffer,
+	// 	depth_image.image,
+	// 	{.EARLY_FRAGMENT_TESTS, .LATE_FRAGMENT_TESTS},
+	// 	{.EARLY_FRAGMENT_TESTS, .LATE_FRAGMENT_TESTS},
+	// 	{},
+	// 	{.DEPTH_STENCIL_ATTACHMENT_WRITE},
+	// 	.UNDEFINED,
+	// 	.DEPTH_ATTACHMENT_OPTIMAL,
+	// 	{.DEPTH},
+	// )
 
-	clear_color := vk.ClearValue {
-		color = {float32 = {0.1, 0.12, 0.32, 1.0}},
-	}
+	// clear_color := vk.ClearValue {
+	// 	color = {float32 = {0.1, 0.12, 0.32, 1.0}},
+	// }
 
-	attachment_info := vk.RenderingAttachmentInfo {
-		sType       = .RENDERING_ATTACHMENT_INFO,
-		imageView   = r.swapchain_image_views[image_index],
-		imageLayout = .COLOR_ATTACHMENT_OPTIMAL,
-		loadOp      = .LOAD,
-		storeOp     = .STORE,
-		clearValue  = clear_color,
-	}
+	// attachment_info := vk.RenderingAttachmentInfo {
+	// 	sType       = .RENDERING_ATTACHMENT_INFO,
+	// 	imageView   = r.swapchain_image_views[image_index],
+	// 	imageLayout = .COLOR_ATTACHMENT_OPTIMAL,
+	// 	loadOp      = .LOAD,
+	// 	storeOp     = .STORE,
+	// 	clearValue  = clear_color,
+	// }
 
-	depth_clear := vk.ClearValue {
-		depthStencil = {depth = 1.0},
-	}
+	// depth_clear := vk.ClearValue {
+	// 	depthStencil = {depth = 1.0},
+	// }
 
-	depth_attachment_info := vk.RenderingAttachmentInfo {
-		sType       = .RENDERING_ATTACHMENT_INFO,
-		imageView   = depth_image.image_view,
-		imageLayout = .DEPTH_ATTACHMENT_OPTIMAL,
-		loadOp      = .CLEAR,
-		storeOp     = .STORE,
-		clearValue  = depth_clear,
-	}
+	// depth_attachment_info := vk.RenderingAttachmentInfo {
+	// 	sType       = .RENDERING_ATTACHMENT_INFO,
+	// 	imageView   = depth_image.image_view,
+	// 	imageLayout = .DEPTH_ATTACHMENT_OPTIMAL,
+	// 	loadOp      = .CLEAR,
+	// 	storeOp     = .STORE,
+	// 	clearValue  = depth_clear,
+	// }
 
-	rendering_info := vk.RenderingInfo {
-		sType = .RENDERING_INFO,
-		renderArea = {offset = {0, 0}, extent = r.swapchain.extent},
-		layerCount = 1,
-		colorAttachmentCount = 1,
-		pColorAttachments = &attachment_info,
-		pDepthAttachment = &depth_attachment_info,
-	}
+	// rendering_info := vk.RenderingInfo {
+	// 	sType = .RENDERING_INFO,
+	// 	renderArea = {offset = {0, 0}, extent = r.swapchain.extent},
+	// 	layerCount = 1,
+	// 	colorAttachmentCount = 1,
+	// 	pColorAttachments = &attachment_info,
+	// 	pDepthAttachment = &depth_attachment_info,
+	// }
 
-	viewport: vk.Viewport
-	viewport.x = 0.0
-	viewport.y = 0.0
-	viewport.width = f32(r.swapchain.extent.width)
-	viewport.height = f32(r.swapchain.extent.height)
-	viewport.minDepth = 0.0
-	viewport.maxDepth = 1.0
+	// viewport: vk.Viewport
+	// viewport.x = 0.0
+	// viewport.y = 0.0
+	// viewport.width = f32(r.swapchain.extent.width)
+	// viewport.height = f32(r.swapchain.extent.height)
+	// viewport.minDepth = 0.0
+	// viewport.maxDepth = 1.0
 
-	scissor: vk.Rect2D
-	scissor.offset = {0, 0}
-	scissor.extent = r.swapchain.extent
+	// scissor: vk.Rect2D
+	// scissor.offset = {0, 0}
+	// scissor.extent = r.swapchain.extent
 
-	vk.CmdBeginRendering(buffer, &rendering_info)
+	// vk.CmdBeginRendering(buffer, &rendering_info)
 
-	vk.CmdBindPipeline(buffer, .GRAPHICS, r.graphics_pipeline)
+	// vk.CmdBindPipeline(buffer, .GRAPHICS, r.graphics_pipeline)
 
-	vk.CmdBindDescriptorSets(buffer, .GRAPHICS, r.pipeline_layout, 0, 1, &r.bindless_set, 0, nil)
+	// vk.CmdBindDescriptorSets(buffer, .GRAPHICS, r.pipeline_layout, 0, 1, &r.bindless_set, 0, nil)
 
-	pc := Push_Constants {
-		vertex_buffer_addr = hm.get(r.shader_resources.buffers, r.vertex_buffer).address.?,
-		index_buffer_addr  = hm.get(r.shader_resources.buffers, r.index_buffer).address.?,
-		mvp                = mvp,
-		sampler            = 0,
-		texture            = 0,
-	}
-	vk.CmdPushConstants(
-		buffer,
-		r.pipeline_layout,
-		{.VERTEX, .FRAGMENT},
-		0,
-		size_of(Push_Constants),
-		&pc,
-	)
+	// pc := Push_Constants {
+	// 	vertex_buffer_addr = hm.get(r.shader_resources.buffers, r.vertex_buffer).address.?,
+	// 	index_buffer_addr  = hm.get(r.shader_resources.buffers, r.index_buffer).address.?,
+	// 	mvp                = mvp,
+	// 	sampler            = 0,
+	// 	texture            = 0,
+	// }
+	// vk.CmdPushConstants(
+	// 	buffer,
+	// 	r.pipeline_layout,
+	// 	{.VERTEX, .FRAGMENT},
+	// 	0,
+	// 	size_of(Push_Constants),
+	// 	&pc,
+	// )
 
-	vk.CmdSetViewport(buffer, 0, 1, &viewport)
-	vk.CmdSetScissor(buffer, 0, 1, &scissor)
+	// vk.CmdSetViewport(buffer, 0, 1, &viewport)
+	// vk.CmdSetScissor(buffer, 0, 1, &scissor)
 
-	vk.CmdDraw(buffer, u32(len(indices)), 1, 0, 0)
+	// vk.CmdDraw(buffer, u32(len(indices)), 1, 0, 0)
 
-	vk.CmdEndRendering(buffer)
+	// vk.CmdEndRendering(buffer)
 
 	transition_vk_image(
 		buffer,
@@ -841,7 +802,7 @@ record_command_buffer :: proc(
 		{.ALL_COMMANDS},
 		{.COLOR_ATTACHMENT_WRITE},
 		{},
-		.COLOR_ATTACHMENT_OPTIMAL,
+		.TRANSFER_DST_OPTIMAL,
 		.PRESENT_SRC_KHR,
 	)
 
@@ -1020,28 +981,6 @@ load_texture_from_file :: proc(r: ^Renderer, path: cstring) -> (image_id: Image_
 	end_immediate_submit(r)
 
 	return image_id, true
-}
-
-load_svo :: proc(r: ^Renderer) -> (ok: bool) {
-	nodes := build_test_svo(context.allocator)
-	defer delete(nodes)
-
-	buffer_size := len(nodes) * size_of(SVONode)
-
-	r.svo_buffer = create_buffer(
-		r^,
-		SVONode,
-		"SVO Buffer",
-		len(nodes),
-		{.STORAGE_BUFFER, .TRANSFER_DST},
-		{.Host_Access_Sequential_Write, .Mapped},
-	)
-
-	// Upload data
-	svo_buf := hm.get(r.shader_resources.buffers, r.svo_buffer)
-	mem.copy(svo_buf.info.mapped_data, raw_data(nodes), buffer_size)
-
-	return true
 }
 
 draw_frame :: proc(r: ^Renderer) -> (ok: bool) {

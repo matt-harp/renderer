@@ -28,9 +28,11 @@ create_glfw_window :: proc(
 
 	if !resizable {
 		glfw.WindowHint(glfw.RESIZABLE, glfw.FALSE)
+	} else {
+		glfw.WindowHint(glfw.RESIZABLE, glfw.TRUE)
 	}
 
-	window = glfw.CreateWindow(800, 600, title, nil, nil)
+	window = glfw.CreateWindow(1600, 900, title, nil, nil)
 	if window == nil {
 		log.errorf("Failed to create a GLFW window")
 		return

@@ -102,7 +102,7 @@ main :: proc() {
 
 		gfx.mvp = proj * view * model
 		gfx.inv_view = linalg.inverse(view)
-		gfx.inv_proj = linalg.inverse(proj * view)
+		gfx.inv_proj = linalg.inverse(proj * camera_get_view_matrix(&camera, false))
 		gfx.inv_model = linalg.inverse(model)
 		gfx.camera_origin = camera.pos
 

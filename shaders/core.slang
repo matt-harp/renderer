@@ -1,7 +1,7 @@
 module core;
 
-[vk::binding(0, 0)] __DynamicResource havk__TextureHeap[];
-[vk::binding(1, 0)] __DynamicResource havk__RWTextureHeap[];
+[vk::binding(0, 0)] __DynamicResource vk__TextureHeap[];
+[vk::binding(1, 0)] __DynamicResource vk__RWTextureHeap[];
 
 interface IImageDescriptor {
     static const bool isWriteable;
@@ -19,11 +19,11 @@ public struct ImageHandle<T : IImageDescriptor & __IDynamicResourceCastable> {
 
     public property T Instance {
         [ForceInline]
-        get { return (T.isWriteable ? havk__RWTextureHeap : havk__TextureHeap)[DescriptorIndex].as<T>(); }
+        get { return (T.isWriteable ? vk__RWTextureHeap : vk__TextureHeap)[DescriptorIndex].as<T>(); }
     }
     public property T NonUniformInstance {
         [ForceInline]
-        get { return (T.isWriteable ? havk__RWTextureHeap : havk__TextureHeap)[NonUniformResourceIndex(DescriptorIndex)].as<T>(); }
+        get { return (T.isWriteable ? vk__RWTextureHeap : vk__TextureHeap)[NonUniformResourceIndex(DescriptorIndex)].as<T>(); }
     }
 }
 
