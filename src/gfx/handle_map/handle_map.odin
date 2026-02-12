@@ -136,7 +136,7 @@ delete :: proc(m: ^Handle_Map($T, $HT, $Max), loc := #caller_location) {
 
 	// Can't store this in the `items_arena` since then `items` would not be
 	// able to reallocate in-place.
-	// 
+	//
 	// Also, no need to make a separate arena for this one: It serves no
 	// purpose: You don't need stable pointers to the items in this array.
 	runtime.delete(m.unused_items, loc)
@@ -257,6 +257,10 @@ cap :: proc(m: Handle_Map($T, $HT, $Max)) -> int {
 	return int((m.items_arena.total_reserved - size_of(vmem.Arena)) / size_of(T))
 }
 
+max :: proc(m: Handle_Map($T, $HT, $Max)) -> int {
+	return Max
+}
+
 // For iterating a handle map. Create using `make_iter`.
 Handle_Map_Iterator :: struct($T: typeid, $HT: typeid, $Max: int) {
 	m: ^Handle_Map(T, HT, Max),
@@ -274,7 +278,7 @@ make_iter :: proc(m: ^Handle_Map($T, $HT, $Max)) -> Handle_Map_Iterator(T, HT, M
 // Usage:
 //     my_iter := hm.make_iter(&my_handle_map)
 //     for e in hm.iter(&my_iter) {}
-// 
+//
 // Instead of using an iterator you can also loop over `items` and check if
 // `item.handle.idx == 0` and in that case skip that item.
 iter :: proc(it: ^Handle_Map_Iterator($T, $HT, $Max)) -> (val: ^T, h: HT, cond: bool) {

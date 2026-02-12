@@ -34,9 +34,16 @@ GPUImage :: struct {
 
 
 GPU_Shader_Resource_Table :: struct {
-	buffers: hm.Handle_Map(GPUBuffer, Buffer_Id, 1024),
-	images:  hm.Handle_Map(GPUImage, Image_Id, 1024),
+	buffers:  hm.Handle_Map(GPUBuffer, Buffer_Id, 1024),
+	images:   hm.Handle_Map(GPUImage, Image_Id, 1024),
+	// samplers: hm.Handle_Map(, 1024),
 }
+
+STORAGE_BUFFER_BINDING :: 0
+STORAGE_IMAGE_BINDING :: 1
+SAMPLED_IMAGE_BINDING :: 2
+SAMPLER_BINDING :: 3
+BUFFER_DEVICE_ADDRESS_BUFFER_BINDING :: 4
 
 destroy_gpu_resources :: proc(r: ^Renderer) {
 	for &e in r.shader_resources.buffers.items {

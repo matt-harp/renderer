@@ -236,6 +236,15 @@ create_compute_pipeline :: proc(r: ^Renderer) -> (ok: bool) {
 		pPushConstantRanges    = &pc_range,
 	}
 	vk_check(vk.CreatePipelineLayout(r.device.device, &layout_info, nil, &r.compute_layout))
+	when ODIN_DEBUG {
+		name_info := vk.DebugUtilsObjectNameInfoEXT {
+			sType = .DEBUG_UTILS_OBJECT_NAME_INFO_EXT,
+			objectType = .PIPELINE_LAYOUT,
+			objectHandle = u64(r.compute_layout),
+			pObjectName = "compute layout",
+		}
+		vk.SetDebugUtilsObjectNameEXT(r.device.device, &name_info)
+	}
 
 	pipeline_info := vk.ComputePipelineCreateInfo {
 		sType = .COMPUTE_PIPELINE_CREATE_INFO,

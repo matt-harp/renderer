@@ -282,7 +282,7 @@ init_renderer :: proc(r: ^Renderer) -> (ok: bool) {
 	write := vk.WriteDescriptorSet {
 		sType           = .WRITE_DESCRIPTOR_SET,
 		dstSet          = r.bindless_set,
-		dstBinding      = 1, // RW texture
+		dstBinding      = STORAGE_IMAGE_BINDING,
 		descriptorCount = 1,
 		descriptorType  = .STORAGE_IMAGE,
 		pImageInfo      = &draw_image_info,
@@ -382,23 +382,54 @@ destroy_renderer :: proc(r: ^Renderer) {
 }
 
 init_descriptors :: proc(r: ^Renderer) -> (ok: bool) {
-	// 1. Layout Bindings
-	bindings := []vk.DescriptorSetLayoutBinding {
-		{
-			binding         = 0, // RO Texture Heap
-			descriptorType  = .SAMPLED_IMAGE,
-			descriptorCount = 128,
-			stageFlags      = {.COMPUTE},
-		},
-		{
-			binding         = 1, // RW Texture Heap
-			descriptorType  = .STORAGE_IMAGE,
-			descriptorCount = 128,
-			stageFlags      = {.COMPUTE},
-		},
+	pool_sizes := []vk.DescriptorPoolSize {
+		{type = .STORAGE_BUFFER, descriptorCount = u32(hm.max(r.shader_resources.buffers))},
+		{type = .STORAGE_IMAGE, descriptorCount = u32(hm.max(r.shader_resources.images))},
+		{type = .SAMPLED_IMAGE, descriptorCount = u32(hm.max(r.shader_resources.images))},
+		// {type = .SAMPLER, descriptorCount = u32(hm.max(r.shader_resources.samplers))},
 	}
 
-	flags := []vk.DescriptorBindingFlags{{}, {}}
+	pool_info := vk.DescriptorPoolCreateInfo {
+		sType         = .DESCRIPTOR_POOL_CREATE_INFO,
+		flags         = {.UPDATE_AFTER_BIND},
+		maxSets       = 1,
+		poolSizeCount = u32(len(pool_sizes)),
+		pPoolSizes    = raw_data(pool_sizes),
+	}
+	vk.CreateDescriptorPool(r.device.device, &pool_info, nil, &r.bindless_pool)
+
+	bindings := []vk.DescriptorSetLayoutBinding {
+		{
+			binding = STORAGE_BUFFER_BINDING,
+			descriptorType = .STORAGE_BUFFER,
+			descriptorCount = u32(hm.max(r.shader_resources.buffers)),
+			stageFlags = vk.ShaderStageFlags_ALL,
+		},
+		{
+			binding = STORAGE_IMAGE_BINDING,
+			descriptorType = .STORAGE_IMAGE,
+			descriptorCount = u32(hm.max(r.shader_resources.images)),
+			stageFlags = vk.ShaderStageFlags_ALL,
+		},
+		{
+			binding = SAMPLED_IMAGE_BINDING,
+			descriptorType = .SAMPLED_IMAGE,
+			descriptorCount = u32(hm.max(r.shader_resources.images)),
+			stageFlags = vk.ShaderStageFlags_ALL,
+		},
+		// {
+		// 	binding         = SAMPLER_BINDING,
+		// 	descriptorType  = .SAMPLER,
+		// 	descriptorCount = u32(hm.max(r.shader_resources.samplers)),
+		// 	stageFlags      = vk.ShaderStageFlags_ALL,
+		// },
+	}
+
+	flags := []vk.DescriptorBindingFlags {
+		{.PARTIALLY_BOUND, .UPDATE_AFTER_BIND},
+		{.PARTIALLY_BOUND, .UPDATE_AFTER_BIND},
+		{.PARTIALLY_BOUND, .UPDATE_AFTER_BIND},
+	}
 
 	flags_info := vk.DescriptorSetLayoutBindingFlagsCreateInfo {
 		sType         = .DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
@@ -411,26 +442,10 @@ init_descriptors :: proc(r: ^Renderer) -> (ok: bool) {
 		pNext        = &flags_info,
 		bindingCount = u32(len(bindings)),
 		pBindings    = raw_data(bindings),
-		flags        = {}, // .UPDATE_AFTER_BIND_POOL
+		flags        = {.UPDATE_AFTER_BIND_POOL},
 	}
 	vk.CreateDescriptorSetLayout(r.device.device, &layout_info, nil, &r.bindless_layout)
 
-	// 3. Pool (Must support UPDATE_AFTER_BIND)
-	pool_sizes := []vk.DescriptorPoolSize {
-		{type = .SAMPLED_IMAGE, descriptorCount = 1024},
-		{type = .STORAGE_IMAGE, descriptorCount = 1024},
-	}
-
-	pool_info := vk.DescriptorPoolCreateInfo {
-		sType         = .DESCRIPTOR_POOL_CREATE_INFO,
-		flags         = {.UPDATE_AFTER_BIND},
-		maxSets       = 1,
-		poolSizeCount = u32(len(pool_sizes)),
-		pPoolSizes    = raw_data(pool_sizes),
-	}
-	vk.CreateDescriptorPool(r.device.device, &pool_info, nil, &r.bindless_pool)
-
-	// 4. Allocate the one Global Set
 	alloc_info := vk.DescriptorSetAllocateInfo {
 		sType              = .DESCRIPTOR_SET_ALLOCATE_INFO,
 		descriptorPool     = r.bindless_pool,

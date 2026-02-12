@@ -60,7 +60,8 @@ init_device :: proc(r: ^Renderer) -> (ok: bool) {
 
 	// Surface
 	surface: vk.SurfaceKHR
-	if res := glfw.CreateWindowSurface(vkb_instance.instance, window, nil, &surface); res != .SUCCESS {
+	if res := glfw.CreateWindowSurface(vkb_instance.instance, window, nil, &surface);
+	   res != .SUCCESS {
 		log.errorf("glfw couldn't create vulkan surface: %#v", res)
 		return
 	}
@@ -76,9 +77,9 @@ init_device :: proc(r: ^Renderer) -> (ok: bool) {
 	vkb.physical_device_selector_set_surface(selector, surface)
 
 	vk10 := vk.PhysicalDeviceFeatures {
-		fragmentStoresAndAtomics = true,
+		fragmentStoresAndAtomics       = true,
 		vertexPipelineStoresAndAtomics = true,
-		shaderInt64 = true,
+		shaderInt64                    = true,
 	}
 	vkb.physical_device_selector_set_required_features(selector, vk10)
 
@@ -111,19 +112,21 @@ init_device :: proc(r: ^Renderer) -> (ok: bool) {
 
 	// vulkan 1.2 features
 	vk12 := vk.PhysicalDeviceVulkan12Features {
-		sType               = .PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
-		bufferDeviceAddress = true,
-		scalarBlockLayout = true,
+		sType                                         = .PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+		bufferDeviceAddress                           = true,
+		scalarBlockLayout                             = true,
 		// descriptorIndexing                           = true,
 		// shaderSampledImageArrayNonUniformIndexing    = true,
-		runtimeDescriptorArray                       = true,
+		runtimeDescriptorArray                        = true,
 		// descriptorBindingVariableDescriptorCount     = true,
-		descriptorBindingPartiallyBound              = true,
-		descriptorBindingSampledImageUpdateAfterBind = true,
-		timelineSemaphore = true,
-		vulkanMemoryModel = true,
-		vulkanMemoryModelDeviceScope = true,
-		storageBuffer8BitAccess = true,
+		descriptorBindingPartiallyBound               = true,
+		descriptorBindingStorageBufferUpdateAfterBind = true,
+		descriptorBindingStorageImageUpdateAfterBind  = true,
+		descriptorBindingSampledImageUpdateAfterBind  = true,
+		timelineSemaphore                             = true,
+		vulkanMemoryModel                             = true,
+		vulkanMemoryModelDeviceScope                  = true,
+		storageBuffer8BitAccess                       = true,
 	}
 	vkb.device_builder_add_pnext(device_builder, &vk12)
 
