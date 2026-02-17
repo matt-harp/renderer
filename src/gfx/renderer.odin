@@ -86,6 +86,7 @@ Renderer :: struct {
 	// buffers
 	vertex_buffer:         Buffer_Id,
 	index_buffer:          Buffer_Id,
+	voxel_volume:          Buffer_Id,
 
 	// resources
 	samplers:              [3]vk.Sampler,
@@ -100,6 +101,7 @@ Compute_Push_Constants :: struct {
 	inv_proj:       linalg.Matrix4x4f32,
 	camera_origin:  [3]f32,
 	output_texture: u32,
+	volume_data:    u32,
 }
 
 Push_Constants :: struct {
@@ -283,6 +285,7 @@ init_renderer :: proc(r: ^Renderer) -> (ok: bool) {
 		sType           = .WRITE_DESCRIPTOR_SET,
 		dstSet          = r.bindless_set,
 		dstBinding      = STORAGE_IMAGE_BINDING,
+		dstArrayElement = r.draw_image.idx,
 		descriptorCount = 1,
 		descriptorType  = .STORAGE_IMAGE,
 		pImageInfo      = &draw_image_info,
@@ -325,6 +328,8 @@ init_renderer :: proc(r: ^Renderer) -> (ok: bool) {
 		)
 	}
 
+	init_voxel_volume(r)
+
 	return true
 }
 
@@ -354,10 +359,9 @@ destroy_renderer :: proc(r: ^Renderer) {
 
 	vma.destroy_allocator(r.allocator)
 
-	vk.DestroyDescriptorSetLayout(r.device.device, r.bindless_layout, nil)
-	vk.DestroySampler(r.device.device, r.samplers[0], nil)
+	destroy_descriptors(r)
 
-	vk.DestroyDescriptorPool(r.device.device, r.bindless_pool, nil)
+	vk.DestroySampler(r.device.device, r.samplers[0], nil)
 
 	destroy_sync_objects(r)
 
@@ -365,8 +369,8 @@ destroy_renderer :: proc(r: ^Renderer) {
 	vk.DestroyCommandPool(r.device.device, r.transfer_command_pool, nil)
 	vk.DestroyCommandPool(r.device.device, r.imm_command_pool, nil)
 
-	vk.DestroyPipeline(r.device.device, r.graphics_pipeline, nil)
-	vk.DestroyPipelineLayout(r.device.device, r.pipeline_layout, nil)
+	vk.DestroyPipeline(r.device.device, r.compute_pipeline, nil)
+	vk.DestroyPipelineLayout(r.device.device, r.compute_layout, nil)
 
 	destroy_swapchain(r)
 
@@ -379,82 +383,6 @@ destroy_renderer :: proc(r: ^Renderer) {
 
 	hm.delete(&r.shader_resources.buffers)
 	free(r.shader_resources)
-}
-
-init_descriptors :: proc(r: ^Renderer) -> (ok: bool) {
-	pool_sizes := []vk.DescriptorPoolSize {
-		{type = .STORAGE_BUFFER, descriptorCount = u32(hm.max(r.shader_resources.buffers))},
-		{type = .STORAGE_IMAGE, descriptorCount = u32(hm.max(r.shader_resources.images))},
-		{type = .SAMPLED_IMAGE, descriptorCount = u32(hm.max(r.shader_resources.images))},
-		// {type = .SAMPLER, descriptorCount = u32(hm.max(r.shader_resources.samplers))},
-	}
-
-	pool_info := vk.DescriptorPoolCreateInfo {
-		sType         = .DESCRIPTOR_POOL_CREATE_INFO,
-		flags         = {.UPDATE_AFTER_BIND},
-		maxSets       = 1,
-		poolSizeCount = u32(len(pool_sizes)),
-		pPoolSizes    = raw_data(pool_sizes),
-	}
-	vk.CreateDescriptorPool(r.device.device, &pool_info, nil, &r.bindless_pool)
-
-	bindings := []vk.DescriptorSetLayoutBinding {
-		{
-			binding = STORAGE_BUFFER_BINDING,
-			descriptorType = .STORAGE_BUFFER,
-			descriptorCount = u32(hm.max(r.shader_resources.buffers)),
-			stageFlags = vk.ShaderStageFlags_ALL,
-		},
-		{
-			binding = STORAGE_IMAGE_BINDING,
-			descriptorType = .STORAGE_IMAGE,
-			descriptorCount = u32(hm.max(r.shader_resources.images)),
-			stageFlags = vk.ShaderStageFlags_ALL,
-		},
-		{
-			binding = SAMPLED_IMAGE_BINDING,
-			descriptorType = .SAMPLED_IMAGE,
-			descriptorCount = u32(hm.max(r.shader_resources.images)),
-			stageFlags = vk.ShaderStageFlags_ALL,
-		},
-		// {
-		// 	binding         = SAMPLER_BINDING,
-		// 	descriptorType  = .SAMPLER,
-		// 	descriptorCount = u32(hm.max(r.shader_resources.samplers)),
-		// 	stageFlags      = vk.ShaderStageFlags_ALL,
-		// },
-	}
-
-	flags := []vk.DescriptorBindingFlags {
-		{.PARTIALLY_BOUND, .UPDATE_AFTER_BIND},
-		{.PARTIALLY_BOUND, .UPDATE_AFTER_BIND},
-		{.PARTIALLY_BOUND, .UPDATE_AFTER_BIND},
-	}
-
-	flags_info := vk.DescriptorSetLayoutBindingFlagsCreateInfo {
-		sType         = .DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
-		bindingCount  = u32(len(flags)),
-		pBindingFlags = raw_data(flags),
-	}
-
-	layout_info := vk.DescriptorSetLayoutCreateInfo {
-		sType        = .DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-		pNext        = &flags_info,
-		bindingCount = u32(len(bindings)),
-		pBindings    = raw_data(bindings),
-		flags        = {.UPDATE_AFTER_BIND_POOL},
-	}
-	vk.CreateDescriptorSetLayout(r.device.device, &layout_info, nil, &r.bindless_layout)
-
-	alloc_info := vk.DescriptorSetAllocateInfo {
-		sType              = .DESCRIPTOR_SET_ALLOCATE_INFO,
-		descriptorPool     = r.bindless_pool,
-		descriptorSetCount = 1,
-		pSetLayouts        = &r.bindless_layout,
-	}
-	vk.AllocateDescriptorSets(r.device.device, &alloc_info, &r.bindless_set)
-
-	return true
 }
 
 SwapchainConfig :: struct {
@@ -502,6 +430,9 @@ create_swapchain :: proc(r: ^Renderer, config: SwapchainConfig) -> (ok: bool) {
 recreate_swapchain :: proc(r: ^Renderer, config: SwapchainConfig) -> (ok: bool) {
 	vk.DeviceWaitIdle(r.device.device)
 
+	// Clean up old draw image
+	destroy_image(r, r.draw_image)
+
 	// clean up old swapchain without destroying it
 	vkb.swapchain_destroy_image_views(r.swapchain, r.swapchain_image_views)
 	delete(r.swapchain_image_views)
@@ -510,8 +441,35 @@ recreate_swapchain :: proc(r: ^Renderer, config: SwapchainConfig) -> (ok: bool) 
 	// old swapchain used to create new one
 	create_swapchain(r, config) or_return
 
+	// Recreate draw image with new dimensions
+	r.draw_image = create_image(
+		r^,
+		"Draw Image",
+		.R16G16B16A16_SFLOAT,
+		{r.swapchain.extent.width, r.swapchain.extent.height, 1},
+		{.TRANSFER_SRC, .TRANSFER_DST, .STORAGE, .COLOR_ATTACHMENT},
+	)
+
+	// Update the descriptor set with the new image view
+	draw_image := hm.get(r.shader_resources.images, r.draw_image)
+	draw_image_info := vk.DescriptorImageInfo {
+		imageView   = draw_image.image_view,
+		imageLayout = .GENERAL,
+	}
+	write := vk.WriteDescriptorSet {
+		sType           = .WRITE_DESCRIPTOR_SET,
+		dstSet          = r.bindless_set,
+		dstBinding      = STORAGE_IMAGE_BINDING,
+		dstArrayElement = r.draw_image.idx,
+		descriptorType  = .STORAGE_IMAGE,
+		descriptorCount = 1,
+		pImageInfo      = &draw_image_info,
+	}
+	vk.UpdateDescriptorSets(r.device.device, 1, &write, 0, nil)
+
 	return true
 }
+
 
 destroy_swapchain :: proc(r: ^Renderer) {
 	vkb.swapchain_destroy_image_views(r.swapchain, r.swapchain_image_views)
@@ -646,7 +604,8 @@ record_command_buffer :: proc(
 	c_pc := Compute_Push_Constants {
 		inv_proj       = inv_proj,
 		camera_origin  = camera_origin,
-		output_texture = 0,
+		output_texture = r.draw_image.idx,
+		volume_data    = r.voxel_volume.idx,
 	}
 	vk.CmdPushConstants(
 		buffer,

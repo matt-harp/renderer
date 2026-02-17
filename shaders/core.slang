@@ -1,21 +1,22 @@
 module core;
 
-[vk::binding(0, 0)] __DynamicResource vk__TextureHeap[];
+[vk::binding(0, 0)] __DynamicResource vk__BufferHeap[];
 [vk::binding(1, 0)] __DynamicResource vk__RWTextureHeap[];
+[vk::binding(2, 0)] __DynamicResource vk__TextureHeap[];
 
 interface IImageDescriptor {
     static const bool isWriteable;
 };
 
 __generic<E : ITexelElement, Shape : __ITextureShape, int isArray, int isMS, int sampleCount, int access, int isShadow, int format>
-    extension _Texture<E, Shape, isArray, isMS, sampleCount, access, isShadow, 0, format> : IImageDescriptor {
+extension _Texture<E, Shape, isArray, isMS, sampleCount, access, isShadow, 0, format> : IImageDescriptor {
     static const bool isWriteable = access == 1;
 };
 
 public struct ImageHandle<T : IImageDescriptor & __IDynamicResourceCastable> {
     uint DescriptorIndex;
 
-    public property bool IsNull { get { return DescriptorIndex == ~0; } }
+    public property bool IsNull { get { return DescriptorIndex == 0; } }
 
     public property T Instance {
         [ForceInline]
@@ -74,3 +75,27 @@ DEF_TEXTURE_SIZE_EXT(__Shape2D, 1, 3);
 DEF_TEXTURE_SIZE_EXT(__Shape3D, 0, 3);
 
 DEF_TEXTURE_SIZE_EXT(__ShapeCube, 0, 2);
+
+public interface IBufferDescriptor {}
+
+extension<T> StructuredBuffer<T> : IBufferDescriptor {};
+extension<T> RWStructuredBuffer<T> : IBufferDescriptor {};
+
+public struct BufferHandle<T : IBufferDescriptor & __IDynamicResourceCastable> {
+    public uint DescriptorIndex;
+
+    public property bool IsNull { get { return DescriptorIndex == 0; } }
+
+    public property T Instance {
+        [ForceInline]
+        get { return vk__BufferHeap[DescriptorIndex].as<T>(); }
+    }
+
+    public property T NonUniformInstance {
+        [ForceInline]
+        get { return vk__BufferHeap[NonUniformResourceIndex(DescriptorIndex)].as<T>(); }
+    }
+}
+
+public typealias ROBufferHandle<T> = BufferHandle<StructuredBuffer<T>>;
+public typealias RWBufferHandle<T> = BufferHandle<RWStructuredBuffer<T>>;

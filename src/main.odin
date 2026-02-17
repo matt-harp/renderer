@@ -79,10 +79,10 @@ main :: proc() {
 		},
 	)
 
-	width, height := glfw.GetWindowSize(renderer.window)
 	last_time := glfw.GetTime()
 
 	for !glfw.WindowShouldClose(renderer.window) {
+		width, height := glfw.GetWindowSize(renderer.window)
 		glfw.PollEvents()
 		time := glfw.GetTime()
 		delta_time := f32(time - last_time)

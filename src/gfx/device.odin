@@ -9,7 +9,7 @@ import vkb "vkbootstrap"
 
 init_device :: proc(r: ^Renderer) -> (ok: bool) {
 	// Window
-	window := create_glfw_window("Vulkan Triangle", false) or_return
+	window := create_glfw_window("Vulkan Triangle", true) or_return
 	defer if !ok {
 		destroy_glfw_window(r.window)
 	}
