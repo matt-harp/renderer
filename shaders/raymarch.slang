@@ -1,4 +1,4 @@
-import shaders.core;
+import common;
 
 struct Voxel {
 	uint PackedColor;
@@ -6,7 +6,7 @@ struct Voxel {
 	property float4 Color {
 		[ForceInline]
 		get {
-			return PackedColor.asRGBA();
+			return this.PackedColor.asRGBA();
 		}
 	}
 };
@@ -22,11 +22,21 @@ extension uint {
 	}
 }
 
+struct Brick {
+    Voxel Voxels[512]; // 8*8*8
+};
+
+struct TreeNode {
+	uint64_t ValidMask;
+	uint Children[64];
+}
+
 struct DispatchParams {
     float4x4 InvProjMat;
     float3 CameraOrigin;
     ImageHandle2D OutputAlbedoTex;
-    ROBufferHandle<Voxel> VolumeData;
+    ROBufferHandle<Brick> BrickBuffer;
+    ROBufferHandle<TreeNode> NodeBuffer;
 };
 [[vk::push_constant]] DispatchParams pc;
 
@@ -42,7 +52,6 @@ float2 intersectAABB(float3 ro, float3 rd, float3 boxMin, float3 boxMax) {
 }
 
 void GetPrimaryRay(int2 screenPos, out float3 rayPos, out float3 rayDir) {
-	// nit: UV re-scaling and anti-alias jitter can be pre-baked in the matrix.
     float2 uv = (screenPos + 0.5) / float2(pc.OutputAlbedoTex.Instance.Size);
     uv = uv * 2 - 1;
     float4 far = mul(pc.InvProjMat, float4(uv, 1, 1));
@@ -50,55 +59,60 @@ void GetPrimaryRay(int2 screenPos, out float3 rayPos, out float3 rayDir) {
     rayPos = pc.CameraOrigin;
 }
 
+float3 StepMask(float3 sideDist) {
+	bool3 move;
+	bool3 pon = sideDist.xyz < sideDist.yzx; // priority over next component -- 3 adjacent comparisons
+
+	move.x = pon.x && !pon.z; // x < y and x <= z
+	move.y = pon.y && !pon.x; // y < z and y <= x
+	move.z = !(move.x || move.y);
+
+	return float3(move);
+}
+
+// 1. be able to trace the world alone by descending the tree
+// 2. test if the ray intersects with bounding boxes of other models
+// 3. trace within intersecting models
+float4 TraceWorld(float3 rayPos, float3 rayDir) {
+	float3 mapPos = floor(rayPos); // voxel position
+	float3 raySign = sign(rayDir);
+	float3 deltaDist = 1 / rayDir; // ray length per 1 unit along axis
+	// draw it out if it doesn't make sense
+	float3 sideDist = (
+		(mapPos - rayPos) // negative offset within voxel
+		// if we are moving in positive direction, then add 1 to get remaining distance.
+		// if moving negative, this distance is already how far the next floor position is
+		+ 0.5 + raySign * 0.5
+	) * deltaDist; // translate to ray length
+	float3 mask = StepMask(sideDist);
+
+	for (int i = 0; i < 64; i++) {
+		if (GetVoxel(mapPos)) {
+			return;
+		}
+
+		mask      = StepMask(sideDist);
+		mapPos   += mask * raySign;
+		sideDist += mask * raySign * deltaDist;
+	}
+
+	return float4(0.0);
+}
+
 [shader("compute")]
 [numthreads(16, 16, 1)]
 void main(uint2 screenPos : SV_DispatchThreadID) {
     if (any(screenPos >= pc.OutputAlbedoTex.Instance.Size)) return;
 
-    float3 rayPos, rayDir;
-    GetPrimaryRay(screenPos, rayPos, rayDir);
+    float4 finalColor = float4(0.05, 0.05, 0.05, 1.0); // Background
 
-    float2 tRange = intersectAABB(rayPos, rayDir, float3(0), float3(64));
-    if (tRange.x > tRange.y || tRange.y < 0) {
-        pc.OutputAlbedoTex.Store(screenPos, float4(0.0, 0.0, 0.0, 1.0));
-        return;
+    float3 rayOrigin, rayDir;
+    GetPrimaryRay(screenPos, rayOrigin, rayDir);
+
+    if (any(rayDir == 0.0)) {
+   		rayDir += float3(rayDir == 0.0) * 1e-4; // avoid divide by 0
     }
+    finalColor = TraceWorld(rayOrigin, rayDir);
 
-    float tStart = max(tRange.x, 0.0);
-    float3 ro = rayPos + rayDir * (tStart + 1e-4); // add small epsilon
-
-    float3 rayStep = sign(rayDir);
-    float3 deltaDist = 1.0 / abs(rayDir);
-    float3 sideDist = (sign(rayDir) * (floor(ro) - ro) + (sign(rayDir) * 0.5) + 0.5) * deltaDist;
-    int3 voxelPos = int3(floor(ro));
-    float3 normal;
-
-    const int MAX_STEPS = 192;
-
-    for (int i = 0; i < MAX_STEPS; i++) {
-        if (any(voxelPos < 0) || any(voxelPos >= 64)) break;
-
-        uint index = uint(voxelPos.x + voxelPos.y * 64 + voxelPos.z * 64 * 64);
-        float4 color = pc.VolumeData.Instance.Load(index).Color;
-
-        if (color.w > 0.0) {
-        	float3 normalColor = normal * 0.5 + 0.5;
-         	float light = clamp(dot(normal, normalize(float3(0.3, 1.0, 0.2))), 0.4, 1.0);
-
-            pc.OutputAlbedoTex.Store(screenPos, color * light);
-            return;
-        }
-
-        // Improved tie-breaking mask to ensure only one step at a time
-        float3 mask;
-        mask.x = float(sideDist.x <= sideDist.y && sideDist.x <= sideDist.z);
-        mask.y = float(sideDist.y <  sideDist.x && sideDist.y <= sideDist.z);
-        mask.z = float(sideDist.z <  sideDist.x && sideDist.z <  sideDist.y);
-
-        sideDist += mask * deltaDist;
-        voxelPos += int3(mask * rayStep);
-        normal = -mask * rayStep;
-    }
-
-    pc.OutputAlbedoTex.Store(screenPos, float4(0.05, 0.05, 0.05, 1.0));
+    pc.OutputAlbedoTex.Store(screenPos, finalColor);
 }

@@ -81,12 +81,11 @@ Renderer :: struct {
 	// gbuffer
 	depth_image:           Image_Id,
 	draw_image:            Image_Id,
-	svo_buffer:            Buffer_Id,
 
 	// buffers
 	vertex_buffer:         Buffer_Id,
 	index_buffer:          Buffer_Id,
-	voxel_volume:          Buffer_Id,
+	chunk_buffer:          Buffer_Id,
 
 	// resources
 	samplers:              [3]vk.Sampler,
@@ -95,13 +94,17 @@ Renderer :: struct {
 	bindless_layout:       vk.DescriptorSetLayout,
 	bindless_pool:         vk.DescriptorPool,
 	bindless_set:          vk.DescriptorSet,
+
+	// voxel
+	voxel_storage:         ^VoxelStorage,
+	voxel_volume:          ^VoxelVolume,
 }
 
 Compute_Push_Constants :: struct {
 	inv_proj:       linalg.Matrix4x4f32,
 	camera_origin:  [3]f32,
 	output_texture: u32,
-	volume_data:    u32,
+	chunk_buffer:   u32,
 }
 
 Push_Constants :: struct {
@@ -292,8 +295,8 @@ init_renderer :: proc(r: ^Renderer) -> (ok: bool) {
 	}
 	vk.UpdateDescriptorSets(r.device.device, 1, &write, 0, nil)
 
-	create_compute_pipeline(r) or_return
-	// create_graphics_pipeline(r) or_return
+	// create_compute_pipeline(r) or_return
+	create_graphics_pipeline(r) or_return
 
 	// create gbuffers
 	{
@@ -328,7 +331,13 @@ init_renderer :: proc(r: ^Renderer) -> (ok: bool) {
 		)
 	}
 
-	init_voxel_volume(r)
+	r.voxel_storage = new(VoxelStorage)
+	init_storage(r.voxel_storage)
+
+	r.voxel_volume = new(VoxelVolume)
+	init_volume(r.voxel_storage, r.voxel_volume)
+
+
 
 	return true
 }
@@ -336,6 +345,11 @@ init_renderer :: proc(r: ^Renderer) -> (ok: bool) {
 destroy_renderer :: proc(r: ^Renderer) {
 	log.debug("begin cleanup")
 	vk.DeviceWaitIdle(r.device.device)
+
+	destroy_volume(r.voxel_storage, r.voxel_volume)
+	free(r.voxel_volume)
+	destroy_storage(r.voxel_storage)
+	free(r.voxel_storage)
 
 	destroy_gpu_resources(r)
 
@@ -605,7 +619,7 @@ record_command_buffer :: proc(
 		inv_proj       = inv_proj,
 		camera_origin  = camera_origin,
 		output_texture = r.draw_image.idx,
-		volume_data    = r.voxel_volume.idx,
+		chunk_buffer   = r.chunk_buffer.idx,
 	}
 	vk.CmdPushConstants(
 		buffer,
@@ -669,105 +683,105 @@ record_command_buffer :: proc(
 	}
 	vk.CmdBlitImage2(buffer, &blit_info)
 
-	// transition_vk_image(
-	// 	buffer,
-	// 	r.swapchain_images[image_index],
-	// 	{.TRANSFER},
-	// 	{.COLOR_ATTACHMENT_OUTPUT},
-	// 	{.TRANSFER_WRITE},
-	// 	{.COLOR_ATTACHMENT_WRITE},
-	// 	.TRANSFER_DST_OPTIMAL,
-	// 	.COLOR_ATTACHMENT_OPTIMAL,
-	// )
+	transition_vk_image(
+		buffer,
+		r.swapchain_images[image_index],
+		{.TRANSFER},
+		{.COLOR_ATTACHMENT_OUTPUT},
+		{.TRANSFER_WRITE},
+		{.COLOR_ATTACHMENT_WRITE},
+		.TRANSFER_DST_OPTIMAL,
+		.COLOR_ATTACHMENT_OPTIMAL,
+	)
 
-	// depth_image := hm.get(r.shader_resources.images, r.depth_image)
-	// transition_vk_image(
-	// 	buffer,
-	// 	depth_image.image,
-	// 	{.EARLY_FRAGMENT_TESTS, .LATE_FRAGMENT_TESTS},
-	// 	{.EARLY_FRAGMENT_TESTS, .LATE_FRAGMENT_TESTS},
-	// 	{},
-	// 	{.DEPTH_STENCIL_ATTACHMENT_WRITE},
-	// 	.UNDEFINED,
-	// 	.DEPTH_ATTACHMENT_OPTIMAL,
-	// 	{.DEPTH},
-	// )
+	depth_image := hm.get(r.shader_resources.images, r.depth_image)
+	transition_vk_image(
+		buffer,
+		depth_image.image,
+		{.EARLY_FRAGMENT_TESTS, .LATE_FRAGMENT_TESTS},
+		{.EARLY_FRAGMENT_TESTS, .LATE_FRAGMENT_TESTS},
+		{},
+		{.DEPTH_STENCIL_ATTACHMENT_WRITE},
+		.UNDEFINED,
+		.DEPTH_ATTACHMENT_OPTIMAL,
+		{.DEPTH},
+	)
 
-	// clear_color := vk.ClearValue {
-	// 	color = {float32 = {0.1, 0.12, 0.32, 1.0}},
-	// }
+	clear_color := vk.ClearValue {
+		color = {float32 = {0.1, 0.12, 0.32, 1.0}},
+	}
 
-	// attachment_info := vk.RenderingAttachmentInfo {
-	// 	sType       = .RENDERING_ATTACHMENT_INFO,
-	// 	imageView   = r.swapchain_image_views[image_index],
-	// 	imageLayout = .COLOR_ATTACHMENT_OPTIMAL,
-	// 	loadOp      = .LOAD,
-	// 	storeOp     = .STORE,
-	// 	clearValue  = clear_color,
-	// }
+	attachment_info := vk.RenderingAttachmentInfo {
+		sType       = .RENDERING_ATTACHMENT_INFO,
+		imageView   = r.swapchain_image_views[image_index],
+		imageLayout = .COLOR_ATTACHMENT_OPTIMAL,
+		loadOp      = .LOAD,
+		storeOp     = .STORE,
+		clearValue  = clear_color,
+	}
 
-	// depth_clear := vk.ClearValue {
-	// 	depthStencil = {depth = 1.0},
-	// }
+	depth_clear := vk.ClearValue {
+		depthStencil = {depth = 1.0},
+	}
 
-	// depth_attachment_info := vk.RenderingAttachmentInfo {
-	// 	sType       = .RENDERING_ATTACHMENT_INFO,
-	// 	imageView   = depth_image.image_view,
-	// 	imageLayout = .DEPTH_ATTACHMENT_OPTIMAL,
-	// 	loadOp      = .CLEAR,
-	// 	storeOp     = .STORE,
-	// 	clearValue  = depth_clear,
-	// }
+	depth_attachment_info := vk.RenderingAttachmentInfo {
+		sType       = .RENDERING_ATTACHMENT_INFO,
+		imageView   = depth_image.image_view,
+		imageLayout = .DEPTH_ATTACHMENT_OPTIMAL,
+		loadOp      = .CLEAR,
+		storeOp     = .STORE,
+		clearValue  = depth_clear,
+	}
 
-	// rendering_info := vk.RenderingInfo {
-	// 	sType = .RENDERING_INFO,
-	// 	renderArea = {offset = {0, 0}, extent = r.swapchain.extent},
-	// 	layerCount = 1,
-	// 	colorAttachmentCount = 1,
-	// 	pColorAttachments = &attachment_info,
-	// 	pDepthAttachment = &depth_attachment_info,
-	// }
+	rendering_info := vk.RenderingInfo {
+		sType = .RENDERING_INFO,
+		renderArea = {offset = {0, 0}, extent = r.swapchain.extent},
+		layerCount = 1,
+		colorAttachmentCount = 1,
+		pColorAttachments = &attachment_info,
+		pDepthAttachment = &depth_attachment_info,
+	}
 
-	// viewport: vk.Viewport
-	// viewport.x = 0.0
-	// viewport.y = 0.0
-	// viewport.width = f32(r.swapchain.extent.width)
-	// viewport.height = f32(r.swapchain.extent.height)
-	// viewport.minDepth = 0.0
-	// viewport.maxDepth = 1.0
+	viewport: vk.Viewport
+	viewport.x = 0.0
+	viewport.y = 0.0
+	viewport.width = f32(r.swapchain.extent.width)
+	viewport.height = f32(r.swapchain.extent.height)
+	viewport.minDepth = 0.0
+	viewport.maxDepth = 1.0
 
-	// scissor: vk.Rect2D
-	// scissor.offset = {0, 0}
-	// scissor.extent = r.swapchain.extent
+	scissor: vk.Rect2D
+	scissor.offset = {0, 0}
+	scissor.extent = r.swapchain.extent
 
-	// vk.CmdBeginRendering(buffer, &rendering_info)
+	vk.CmdBeginRendering(buffer, &rendering_info)
 
-	// vk.CmdBindPipeline(buffer, .GRAPHICS, r.graphics_pipeline)
+	vk.CmdBindPipeline(buffer, .GRAPHICS, r.graphics_pipeline)
 
-	// vk.CmdBindDescriptorSets(buffer, .GRAPHICS, r.pipeline_layout, 0, 1, &r.bindless_set, 0, nil)
+	vk.CmdBindDescriptorSets(buffer, .GRAPHICS, r.pipeline_layout, 0, 1, &r.bindless_set, 0, nil)
 
-	// pc := Push_Constants {
-	// 	vertex_buffer_addr = hm.get(r.shader_resources.buffers, r.vertex_buffer).address.?,
-	// 	index_buffer_addr  = hm.get(r.shader_resources.buffers, r.index_buffer).address.?,
-	// 	mvp                = mvp,
-	// 	sampler            = 0,
-	// 	texture            = 0,
-	// }
-	// vk.CmdPushConstants(
-	// 	buffer,
-	// 	r.pipeline_layout,
-	// 	{.VERTEX, .FRAGMENT},
-	// 	0,
-	// 	size_of(Push_Constants),
-	// 	&pc,
-	// )
+	pc := Push_Constants {
+		vertex_buffer_addr = hm.get(r.shader_resources.buffers, r.vertex_buffer).address.?,
+		index_buffer_addr  = hm.get(r.shader_resources.buffers, r.index_buffer).address.?,
+		mvp                = mvp,
+		sampler            = 0,
+		texture            = 0,
+	}
+	vk.CmdPushConstants(
+		buffer,
+		r.pipeline_layout,
+		{.VERTEX, .FRAGMENT},
+		0,
+		size_of(Push_Constants),
+		&pc,
+	)
 
-	// vk.CmdSetViewport(buffer, 0, 1, &viewport)
-	// vk.CmdSetScissor(buffer, 0, 1, &scissor)
+	vk.CmdSetViewport(buffer, 0, 1, &viewport)
+	vk.CmdSetScissor(buffer, 0, 1, &scissor)
 
-	// vk.CmdDraw(buffer, u32(len(indices)), 1, 0, 0)
+	vk.CmdDraw(buffer, u32(len(indices)), 1, 0, 0)
 
-	// vk.CmdEndRendering(buffer)
+	vk.CmdEndRendering(buffer)
 
 	transition_vk_image(
 		buffer,

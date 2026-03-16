@@ -1,3 +1,5 @@
+import common;
+
 struct Vertex {
   float3 inPosition;
   float3 inColor;
@@ -12,14 +14,7 @@ struct PushConstants {
   uint sampler_id;
 }
 
-[[push_constant]]
-ConstantBuffer<PushConstants> pc;
-
-[[vk::binding(0, 0)]]
-Texture2D textures[];
-
-[[vk::binding(1, 0)]]
-SamplerState samplers[];
+[[vk::push_constant]] PushConstants pc;
 
 struct VSOutput {
   float4 pos : SV_Position;

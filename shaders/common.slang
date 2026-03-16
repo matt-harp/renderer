@@ -1,4 +1,4 @@
-module core;
+module common;
 
 [vk::binding(0, 0)] __DynamicResource vk__BufferHeap[];
 [vk::binding(1, 0)] __DynamicResource vk__RWTextureHeap[];
