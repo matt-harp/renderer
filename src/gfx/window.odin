@@ -4,6 +4,11 @@ import "base:runtime"
 import "core:log"
 import glfw "vendor:glfw"
 
+Window_Error :: enum {
+	Initialization_Failed,
+	Creation_Failed,
+}
+
 glfw_error :: proc "c" (error: i32, description: cstring) {
 	context = runtime.default_context()
 	log.error(description, error)
@@ -14,13 +19,14 @@ create_glfw_window :: proc(
 	resizable := true,
 ) -> (
 	window: glfw.WindowHandle,
-	ok: bool,
+	err: Error,
 ) {
 	glfw.SetErrorCallback(glfw_error)
 	if !glfw.Init() {
+		err = Window_Error.Initialization_Failed
 		return
 	}
-	defer if !ok {
+	defer if err != nil {
 		glfw.Terminate()
 	}
 
@@ -34,11 +40,13 @@ create_glfw_window :: proc(
 
 	window = glfw.CreateWindow(1600, 900, title, nil, nil)
 	if window == nil {
-		log.errorf("Failed to create a GLFW window")
+		err = Window_Error.Creation_Failed
 		return
 	}
+	
+	err = Window_Error.Creation_Failed
 
-	return window, true
+	return
 }
 
 destroy_glfw_window :: proc(window: glfw.WindowHandle) {

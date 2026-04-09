@@ -5,6 +5,7 @@ import vma "thirdparty:odin-vma"
 import vk "vendor:vulkan"
 
 import hm "handle_map"
+import vkb "vkbootstrap"
 
 create_image :: proc(
 	r: Renderer,
@@ -25,6 +26,7 @@ create_image :: proc(
 	loc := #caller_location,
 ) -> (
 	handle: Image_Id,
+	err: Error,
 ) {
 	assert(r.allocator != nil, "VMA needs to be initialized first")
 	image := GPUImage {
@@ -56,7 +58,7 @@ create_image :: proc(
 		flags = alloc_flags,
 	}
 
-	vk_check(
+	vkb.vk_check(
 		vma.create_image(
 			r.allocator,
 			img_create_info,
@@ -65,7 +67,8 @@ create_image :: proc(
 			&image.allocation,
 			nil,
 		),
-	)
+	) or_return
+	
 	when ODIN_DEBUG {
 		c_str := strings.clone_to_cstring(name)
 		vma.set_allocation_name(r.allocator, image.allocation, c_str)
@@ -95,11 +98,11 @@ create_image :: proc(
 		mip_count = mip_levels,
 		base_array_layer = 0,
 		layer_count = array_layers,
-	)
+	) or_return
 
 	handle = hm.add(&r.shader_resources.images, image)
 
-	return handle
+	return
 }
 
 create_image_view :: proc(
@@ -113,6 +116,7 @@ create_image_view :: proc(
 	layer_count: u32 = vk.REMAINING_ARRAY_LAYERS,
 ) -> (
 	view: vk.ImageView,
+	err: Error,
 ) {
 	sub_range := vk.ImageSubresourceRange {
 		aspectMask     = get_aspect_mask_from_format(format),
@@ -129,9 +133,9 @@ create_image_view :: proc(
 		subresourceRange = sub_range,
 	}
 
-	vk_check(vk.CreateImageView(r.device.device, &view_create_info, nil, &view))
+	vkb.vk_check(vk.CreateImageView(r.device.device, &view_create_info, nil, &view)) or_return
 
-	return view
+	return
 }
 
 create_sampler :: proc(
@@ -145,6 +149,7 @@ create_sampler :: proc(
 	max_anisotropy: f32 = 1.0,
 ) -> (
 	sampler: vk.Sampler,
+	err: Error,
 ) {
 	sampler_create_info := vk.SamplerCreateInfo {
 		sType                   = .SAMPLER_CREATE_INFO,
@@ -165,9 +170,9 @@ create_sampler :: proc(
 		maxLod                  = 0,
 	}
 
-	vk_check(vk.CreateSampler(r.device.device, &sampler_create_info, nil, &sampler))
+	vkb.vk_check(vk.CreateSampler(r.device.device, &sampler_create_info, nil, &sampler)) or_return
 
-	return sampler
+	return
 }
 
 get_aspect_mask_from_format :: proc(format: vk.Format) -> vk.ImageAspectFlags {

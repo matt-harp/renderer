@@ -46,7 +46,10 @@ main :: proc() {
 	}
 
 	renderer: gfx.Renderer
-	gfx.init_renderer(&renderer)
+	if err := gfx.init_renderer(&renderer); err != nil {
+		log.errorf("Encountered error during renderer init: %v", err)
+		return
+	}
 	defer gfx.destroy_renderer(&renderer)
 
 	camera_init(&camera)
@@ -106,8 +109,8 @@ main :: proc() {
 		gfx.inv_model = linalg.inverse(model)
 		gfx.camera_origin = camera.pos
 
-		if ok := gfx.draw_frame(&renderer); !ok {
-			log.errorf("Failed to draw frame.")
+		if draw_err := gfx.draw_frame(&renderer); draw_err != nil {
+			log.errorf("Failed to draw frame: %v", draw_err)
 			break
 		}
 	}}

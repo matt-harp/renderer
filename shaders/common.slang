@@ -1,8 +1,9 @@
 module common;
 
-[vk::binding(0, 0)] __DynamicResource vk__BufferHeap[];
-[vk::binding(1, 0)] __DynamicResource vk__RWTextureHeap[];
-[vk::binding(2, 0)] __DynamicResource vk__TextureHeap[];
+[vk::binding(0, 0)] SamplerState Samplers[];
+[vk::binding(1, 0)] __DynamicResource vk__TextureHeap[];
+[vk::binding(2, 0)] __DynamicResource vk__BufferHeap[];
+[vk::binding(3, 0)] __DynamicResource vk__RWTextureHeap[];
 
 interface IImageDescriptor {
     static const bool isWriteable;
@@ -99,3 +100,8 @@ public struct BufferHandle<T : IBufferDescriptor & __IDynamicResourceCastable> {
 
 public typealias ROBufferHandle<T> = BufferHandle<StructuredBuffer<T>>;
 public typealias RWBufferHandle<T> = BufferHandle<RWStructuredBuffer<T>>;
+
+public property SamplerState LinearRepeat { get { return Samplers[0]; } }
+public property SamplerState LinearClamp { get { return Samplers[1]; } }
+public property SamplerState NearestRepeat { get { return Samplers[2]; } }
+public property SamplerState NearestClamp { get { return Samplers[3]; } }

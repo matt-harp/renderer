@@ -1,16 +1,14 @@
 package gfx
 
-import "core:log"
-
 import glfw "vendor:glfw"
 import vk "vendor:vulkan"
 
 import vkb "vkbootstrap"
 
-init_device :: proc(r: ^Renderer) -> (ok: bool) {
+init_device :: proc(r: ^Renderer) -> (err: Error) {
 	// Window
 	window := create_glfw_window("Vulkan Triangle", true) or_return
-	defer if !ok {
+	defer if err != nil {
 		destroy_glfw_window(r.window)
 	}
 
@@ -20,11 +18,7 @@ init_device :: proc(r: ^Renderer) -> (ok: bool) {
 	vkb.instance_builder_require_api_version(instance_builder, MINIMUM_API_VERSION)
 
 	when ODIN_DEBUG {
-		info, info_err := vkb.get_system_info()
-		if info_err != nil {
-			log.errorf("Failed to get system info: %#v", info_err)
-			return
-		}
+		info := vkb.get_system_info() or_return
 		defer vkb.destroy_system_info(info)
 
 		vkb.instance_builder_enable_validation_layers(instance_builder)
@@ -49,23 +43,15 @@ init_device :: proc(r: ^Renderer) -> (ok: bool) {
 		}
 	}
 
-	vkb_instance, build_err := vkb.instance_builder_build(instance_builder)
-	if build_err != nil {
-		log.errorf("Failed to build instance: %#v", build_err)
-		return
-	}
-	defer if !ok {
+	vkb_instance := vkb.instance_builder_build(instance_builder) or_return
+	defer if err != nil {
 		vkb.destroy_instance(vkb_instance)
 	}
 
 	// Surface
 	surface: vk.SurfaceKHR
-	if res := glfw.CreateWindowSurface(vkb_instance.instance, window, nil, &surface);
-	   res != .SUCCESS {
-		log.errorf("glfw couldn't create vulkan surface: %#v", res)
-		return
-	}
-	defer if !ok {
+	vkb.vk_check(glfw.CreateWindowSurface(vkb_instance.instance, window, nil, &surface)) or_return
+	defer if err != nil {
 		vkb.destroy_surface(vkb_instance, surface)
 	}
 
@@ -80,15 +66,12 @@ init_device :: proc(r: ^Renderer) -> (ok: bool) {
 		fragmentStoresAndAtomics       = true,
 		vertexPipelineStoresAndAtomics = true,
 		shaderInt64                    = true,
+		samplerAnisotropy              = true,
 	}
 	vkb.physical_device_selector_set_required_features(selector, vk10)
 
-	vkb_physical_device, vkb_physical_device_err := vkb.physical_device_selector_select(selector)
-	if vkb_physical_device_err != nil {
-		log.errorf("Failed to select physical device: %#v", vkb_physical_device_err)
-		return
-	}
-	defer if !ok {
+	vkb_physical_device := vkb.physical_device_selector_select(selector) or_return
+	defer if err != nil {
 		vkb.destroy_physical_device(vkb_physical_device)
 	}
 
@@ -139,11 +122,7 @@ init_device :: proc(r: ^Renderer) -> (ok: bool) {
 	vkb.device_builder_add_pnext(device_builder, &vk13)
 
 
-	vkb_device, vkb_device_err := vkb.device_builder_build(device_builder)
-	if vkb_device_err != nil {
-		log.errorf("Failed to get logical device: %#v", vkb_device_err)
-		return
-	}
+	vkb_device := vkb.device_builder_build(device_builder) or_return
 
 	r.window = window
 	r.instance = vkb_instance
@@ -151,5 +130,5 @@ init_device :: proc(r: ^Renderer) -> (ok: bool) {
 	r.physical_device = vkb_physical_device
 	r.device = vkb_device
 
-	return true
+	return
 }

@@ -17,7 +17,7 @@ Camera :: struct {
 
 camera_init :: proc(
 	cam: ^Camera,
-	pos: linalg.Vector3f32 = {0, 0, 72},
+	pos: linalg.Vector3f32 = {0, 0, 4},
 	fov: f32 = 45.0,
 	near: f32 = 0.1,
 	far: f32 = 500.0,

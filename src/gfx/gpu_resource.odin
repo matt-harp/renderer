@@ -4,6 +4,7 @@ import hm "handle_map"
 import vma "thirdparty:odin-vma"
 import vk "vendor:vulkan"
 
+import vkb "vkbootstrap"
 
 Buffer_Id :: distinct hm.Handle
 
@@ -36,21 +37,21 @@ GPUImage :: struct {
 GPU_Shader_Resource_Table :: struct {
 	buffers:  hm.Handle_Map(GPUBuffer, Buffer_Id, 1024),
 	images:   hm.Handle_Map(GPUImage, Image_Id, 1024),
-	// samplers: hm.Handle_Map(, 1024),
+	samplers: [4]vk.Sampler,
 }
 
-STORAGE_BUFFER_BINDING :: 0
-STORAGE_IMAGE_BINDING :: 1
-SAMPLED_IMAGE_BINDING :: 2
-SAMPLER_BINDING :: 3
+SAMPLER_BINDING :: 0
+SAMPLED_IMAGE_BINDING :: 1
+STORAGE_BUFFER_BINDING :: 2
+STORAGE_IMAGE_BINDING :: 3
 BUFFER_DEVICE_ADDRESS_BUFFER_BINDING :: 4
 
-init_descriptors :: proc(r: ^Renderer) -> (ok: bool) {
-	pool_sizes := []vk.DescriptorPoolSize {
+init_descriptors :: proc(r: ^Renderer) -> (err: Error) {
+	pool_sizes := [?]vk.DescriptorPoolSize {
+		{type = .SAMPLER, descriptorCount = u32(len(r.shader_resources.samplers))},
+		{type = .SAMPLED_IMAGE, descriptorCount = u32(hm.max(r.shader_resources.images))},
 		{type = .STORAGE_BUFFER, descriptorCount = u32(hm.max(r.shader_resources.buffers))},
 		{type = .STORAGE_IMAGE, descriptorCount = u32(hm.max(r.shader_resources.images))},
-		{type = .SAMPLED_IMAGE, descriptorCount = u32(hm.max(r.shader_resources.images))},
-		// {type = .SAMPLER, descriptorCount = u32(hm.max(r.shader_resources.samplers))},
 	}
 
 	pool_info := vk.DescriptorPoolCreateInfo {
@@ -58,11 +59,39 @@ init_descriptors :: proc(r: ^Renderer) -> (ok: bool) {
 		flags         = {.UPDATE_AFTER_BIND},
 		maxSets       = 1,
 		poolSizeCount = u32(len(pool_sizes)),
-		pPoolSizes    = raw_data(pool_sizes),
+		pPoolSizes    = &pool_sizes[0],
 	}
-	vk.CreateDescriptorPool(r.device.device, &pool_info, nil, &r.bindless_pool)
+	vkb.vk_check(
+		vk.CreateDescriptorPool(r.device.device, &pool_info, nil, &r.bindless_pool),
+	) or_return
 
-	bindings := []vk.DescriptorSetLayoutBinding {
+	flags := [?]vk.DescriptorBindingFlags {
+		{},
+		{.PARTIALLY_BOUND, .UPDATE_AFTER_BIND},
+		{.PARTIALLY_BOUND, .UPDATE_AFTER_BIND},
+		{.PARTIALLY_BOUND, .UPDATE_AFTER_BIND},
+	}
+
+	flags_info := vk.DescriptorSetLayoutBindingFlagsCreateInfo {
+		sType         = .DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
+		bindingCount  = u32(len(flags)),
+		pBindingFlags = &flags[0],
+	}
+
+	bindings := [?]vk.DescriptorSetLayoutBinding {
+		{
+			binding = SAMPLER_BINDING,
+			descriptorType = .SAMPLER,
+			descriptorCount = u32(len(r.shader_resources.samplers)),
+			stageFlags = vk.ShaderStageFlags_ALL,
+			pImmutableSamplers = &r.shader_resources.samplers[0],
+		},
+		{
+			binding = SAMPLED_IMAGE_BINDING,
+			descriptorType = .SAMPLED_IMAGE,
+			descriptorCount = u32(hm.max(r.shader_resources.images)),
+			stageFlags = vk.ShaderStageFlags_ALL,
+		},
 		{
 			binding = STORAGE_BUFFER_BINDING,
 			descriptorType = .STORAGE_BUFFER,
@@ -75,37 +104,13 @@ init_descriptors :: proc(r: ^Renderer) -> (ok: bool) {
 			descriptorCount = u32(hm.max(r.shader_resources.images)),
 			stageFlags = vk.ShaderStageFlags_ALL,
 		},
-		{
-			binding = SAMPLED_IMAGE_BINDING,
-			descriptorType = .SAMPLED_IMAGE,
-			descriptorCount = u32(hm.max(r.shader_resources.images)),
-			stageFlags = vk.ShaderStageFlags_ALL,
-		},
-		// {
-		// 	binding         = SAMPLER_BINDING,
-		// 	descriptorType  = .SAMPLER,
-		// 	descriptorCount = u32(hm.max(r.shader_resources.samplers)),
-		// 	stageFlags      = vk.ShaderStageFlags_ALL,
-		// },
-	}
-
-	flags := []vk.DescriptorBindingFlags {
-		{.PARTIALLY_BOUND, .UPDATE_AFTER_BIND},
-		{.PARTIALLY_BOUND, .UPDATE_AFTER_BIND},
-		{.PARTIALLY_BOUND, .UPDATE_AFTER_BIND},
-	}
-
-	flags_info := vk.DescriptorSetLayoutBindingFlagsCreateInfo {
-		sType         = .DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
-		bindingCount  = u32(len(flags)),
-		pBindingFlags = raw_data(flags),
 	}
 
 	layout_info := vk.DescriptorSetLayoutCreateInfo {
 		sType        = .DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
 		pNext        = &flags_info,
 		bindingCount = u32(len(bindings)),
-		pBindings    = raw_data(bindings),
+		pBindings    = &bindings[0],
 		flags        = {.UPDATE_AFTER_BIND_POOL},
 	}
 	vk.CreateDescriptorSetLayout(r.device.device, &layout_info, nil, &r.bindless_layout)
@@ -118,7 +123,7 @@ init_descriptors :: proc(r: ^Renderer) -> (ok: bool) {
 	}
 	vk.AllocateDescriptorSets(r.device.device, &alloc_info, &r.bindless_set)
 
-	return true
+	return
 }
 
 destroy_descriptors :: proc(r: ^Renderer) {
@@ -139,4 +144,8 @@ destroy_gpu_resources :: proc(r: ^Renderer) {
 		}
 		destroy_image_unsafe(r, &e)
 	}
+	for &sampler in r.shader_resources.samplers {
+		vk.DestroySampler(r.device.device, sampler, nil)
+	}
 }
+

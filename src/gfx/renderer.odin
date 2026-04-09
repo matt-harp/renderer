@@ -3,7 +3,6 @@ package gfx
 import "core:log"
 import "core:math/linalg"
 import "core:mem"
-import "core:reflect"
 import "vendor:stb/image"
 
 import glfw "vendor:glfw"
@@ -16,19 +15,11 @@ import vkb "vkbootstrap"
 MAX_FRAMES_IN_FLIGHT :: 2
 MINIMUM_API_VERSION :: vk.API_VERSION_1_3
 
-Render_Error :: union {
-	vkb.Error,
-}
+Vma_Error :: union {}
 
-vk_check :: proc(result: vk.Result, loc := #caller_location) {
-	p := context.assertion_failure_proc
-	if result != .SUCCESS {
-		when ODIN_DEBUG {
-			p("vk_check failed", reflect.enum_string(result), loc)
-		} else {
-			p("vk_check failed", "NOT SUCCESS", loc)
-		}
-	}
+Error :: union {
+	vkb.Error,
+	Window_Error,
 }
 
 // per-frame data
@@ -80,45 +71,28 @@ Renderer :: struct {
 
 	// gbuffer
 	depth_image:           Image_Id,
-	draw_image:            Image_Id,
 
 	// buffers
 	vertex_buffer:         Buffer_Id,
 	index_buffer:          Buffer_Id,
-	chunk_buffer:          Buffer_Id,
-
-	// resources
-	samplers:              [3]vk.Sampler,
 
 	// bindless
 	bindless_layout:       vk.DescriptorSetLayout,
 	bindless_pool:         vk.DescriptorPool,
 	bindless_set:          vk.DescriptorSet,
-
-	// voxel
-	voxel_storage:         ^VoxelStorage,
-	voxel_volume:          ^VoxelVolume,
-}
-
-Compute_Push_Constants :: struct {
-	inv_proj:       linalg.Matrix4x4f32,
-	camera_origin:  [3]f32,
-	output_texture: u32,
-	chunk_buffer:   u32,
 }
 
 Push_Constants :: struct {
 	mvp:                linalg.Matrix4f32,
 	vertex_buffer_addr: vk.DeviceAddress,
-	index_buffer_addr:  vk.DeviceAddress,
 	texture:            u32,
-	sampler:            u32,
+	index_buffer_addr:  vk.DeviceAddress,
 }
 
-init_renderer :: proc(r: ^Renderer) -> (ok: bool) {
+init_renderer :: proc(r: ^Renderer) -> (err: Error) {
 	init_device(r) or_return
 	r.shader_resources = new(GPU_Shader_Resource_Table)
-	defer if !ok {
+	defer if err != nil {
 		free(r.shader_resources)
 	}
 
@@ -234,68 +208,65 @@ init_renderer :: proc(r: ^Renderer) -> (ok: bool) {
 
 	create_sync_objects(r) or_return
 
+	r.shader_resources.samplers[0] = create_sampler(
+		r^,
+		.LINEAR,
+		.LINEAR,
+		.LINEAR,
+		.REPEAT,
+		.REPEAT,
+		.REPEAT,
+		16.0,
+	) or_return
+	r.shader_resources.samplers[1] = create_sampler(
+		r^,
+		.LINEAR,
+		.LINEAR,
+		.LINEAR,
+		.CLAMP_TO_EDGE,
+		.CLAMP_TO_EDGE,
+		.CLAMP_TO_EDGE,
+		16.0,
+	) or_return
+	r.shader_resources.samplers[2] = create_sampler(
+		r^,
+		.NEAREST,
+		.NEAREST,
+		.NEAREST,
+		.REPEAT,
+		.REPEAT,
+		.REPEAT,
+	) or_return
+	r.shader_resources.samplers[3] = create_sampler(
+		r^,
+		.NEAREST,
+		.NEAREST,
+		.NEAREST,
+		.CLAMP_TO_EDGE,
+		.CLAMP_TO_EDGE,
+		.CLAMP_TO_EDGE,
+	) or_return
+
 	init_descriptors(r) or_return
 
-	// sampler := create_sampler(r^)
-	// r.samplers[0] = sampler
+	tex_handle := load_texture_from_file(r, "textures/texture.jpg") or_return
+	tex := hm.get(r.shader_resources.images, tex_handle)
 
-	// sampler_info := vk.DescriptorImageInfo {
-	// 	sampler = sampler,
-	// }
-	// sampler_write := vk.WriteDescriptorSet {
-	// 	sType           = .WRITE_DESCRIPTOR_SET,
-	// 	dstSet          = r.bindless_set,
-	// 	dstBinding      = 1,
-	// 	dstArrayElement = 0,
-	// 	descriptorCount = 1,
-	// 	descriptorType  = .SAMPLER,
-	// 	pImageInfo      = &sampler_info,
-	// }
-	// vk.UpdateDescriptorSets(r.device.device, 1, &sampler_write, 0, nil)
-
-	// tex_handle := load_texture_from_file(r, "textures/texture.jpg") or_return
-	// tex := hm.get(r.shader_resources.images, tex_handle)
-
-	// image_info := vk.DescriptorImageInfo {
-	// 	imageView   = tex.image_view,
-	// 	imageLayout = .SHADER_READ_ONLY_OPTIMAL,
-	// }
-	// image_write := vk.WriteDescriptorSet {
-	// 	sType           = .WRITE_DESCRIPTOR_SET,
-	// 	dstSet          = r.bindless_set,
-	// 	dstBinding      = 0,
-	// 	dstArrayElement = 0,
-	// 	descriptorType  = .SAMPLED_IMAGE,
-	// 	descriptorCount = 1,
-	// 	pImageInfo      = &image_info,
-	// }
-	// vk.UpdateDescriptorSets(r.device.device, 1, &image_write, 0, nil)
-
-	r.draw_image = create_image(
-		r^,
-		"Draw Image",
-		.R16G16B16A16_SFLOAT,
-		{r.swapchain.extent.width, r.swapchain.extent.height, 1},
-		{.TRANSFER_SRC, .TRANSFER_DST, .STORAGE, .COLOR_ATTACHMENT},
-	)
-	draw_image := hm.get(r.shader_resources.images, r.draw_image)
-	draw_image_info := vk.DescriptorImageInfo {
-		imageView   = draw_image.image_view,
-		imageLayout = .GENERAL,
+	image_info := vk.DescriptorImageInfo {
+		imageView   = tex.image_view,
+		imageLayout = .SHADER_READ_ONLY_OPTIMAL,
 	}
-
-	write := vk.WriteDescriptorSet {
+	image_write := vk.WriteDescriptorSet {
 		sType           = .WRITE_DESCRIPTOR_SET,
 		dstSet          = r.bindless_set,
-		dstBinding      = STORAGE_IMAGE_BINDING,
-		dstArrayElement = r.draw_image.idx,
+		dstBinding      = SAMPLED_IMAGE_BINDING,
+		dstArrayElement = tex_handle.idx,
+		descriptorType  = .SAMPLED_IMAGE,
 		descriptorCount = 1,
-		descriptorType  = .STORAGE_IMAGE,
-		pImageInfo      = &draw_image_info,
+		pImageInfo      = &image_info,
 	}
-	vk.UpdateDescriptorSets(r.device.device, 1, &write, 0, nil)
+	vk.UpdateDescriptorSets(r.device.device, 1, &image_write, 0, nil)
 
-	// create_compute_pipeline(r) or_return
 	create_graphics_pipeline(r) or_return
 
 	// create gbuffers
@@ -307,7 +278,7 @@ init_renderer :: proc(r: ^Renderer) -> (ok: bool) {
 			len(vertices),
 			{.VERTEX_BUFFER, .SHADER_DEVICE_ADDRESS},
 			{.Host_Access_Sequential_Write, .Mapped},
-		)
+		) or_return
 		vert_buf := hm.get(r.shader_resources.buffers, r.vertex_buffer)
 		mem.copy(vert_buf.info.mapped_data, raw_data(vertices), int(vert_buf.info.size))
 		r.index_buffer = create_buffer(
@@ -317,7 +288,7 @@ init_renderer :: proc(r: ^Renderer) -> (ok: bool) {
 			len(indices),
 			{.INDEX_BUFFER, .SHADER_DEVICE_ADDRESS},
 			{.Host_Access_Sequential_Write, .Mapped},
-		)
+		) or_return
 		idx_buf := hm.get(r.shader_resources.buffers, r.index_buffer)
 		mem.copy(idx_buf.info.mapped_data, raw_data(indices), int(idx_buf.info.size))
 
@@ -328,28 +299,15 @@ init_renderer :: proc(r: ^Renderer) -> (ok: bool) {
 			.D32_SFLOAT,
 			extent,
 			{.DEPTH_STENCIL_ATTACHMENT},
-		)
+		) or_return
 	}
 
-	r.voxel_storage = new(VoxelStorage)
-	init_storage(r.voxel_storage)
-
-	r.voxel_volume = new(VoxelVolume)
-	init_volume(r.voxel_storage, r.voxel_volume)
-
-
-
-	return true
+	return
 }
 
 destroy_renderer :: proc(r: ^Renderer) {
 	log.debug("begin cleanup")
 	vk.DeviceWaitIdle(r.device.device)
-
-	destroy_volume(r.voxel_storage, r.voxel_volume)
-	free(r.voxel_volume)
-	destroy_storage(r.voxel_storage)
-	free(r.voxel_storage)
 
 	destroy_gpu_resources(r)
 
@@ -374,8 +332,6 @@ destroy_renderer :: proc(r: ^Renderer) {
 	vma.destroy_allocator(r.allocator)
 
 	destroy_descriptors(r)
-
-	vk.DestroySampler(r.device.device, r.samplers[0], nil)
 
 	destroy_sync_objects(r)
 
@@ -404,7 +360,7 @@ SwapchainConfig :: struct {
 	present_mode: vk.PresentModeKHR,
 }
 
-create_swapchain :: proc(r: ^Renderer, config: SwapchainConfig) -> (ok: bool) {
+create_swapchain :: proc(r: ^Renderer, config: SwapchainConfig) -> (err: Error) {
 	builder := vkb.create_swapchain_builder(r.device)
 	defer vkb.destroy_swapchain_builder(builder)
 
@@ -415,37 +371,23 @@ create_swapchain :: proc(r: ^Renderer, config: SwapchainConfig) -> (ok: bool) {
 	vkb.swapchain_builder_add_image_usage_flags(builder, {.TRANSFER_DST})
 	vkb.swapchain_builder_set_desired_present_mode(builder, config.present_mode)
 
-	new_swapchain, err := vkb.swapchain_builder_build(builder)
-	if err != nil {
-		log.errorf("Failed to build swapchain: %#v", err)
-		return
-	}
+	new_swapchain := vkb.swapchain_builder_build(builder) or_return
 	if r.swapchain != nil {
 		vkb.destroy_swapchain(r.swapchain)
 	}
 
-	img, img_err := vkb.swapchain_get_images(new_swapchain)
-	if img_err != nil {
-		log.errorf("Failed to get swapchain images: %#v", img_err)
-	}
-
-	img_views, img_views_err := vkb.swapchain_get_image_views(new_swapchain)
-	if img_views_err != nil {
-		log.errorf("Failed to get swapchain image views: %#v", img_views_err)
-	}
+	img := vkb.swapchain_get_images(new_swapchain) or_return
+	img_views := vkb.swapchain_get_image_views(new_swapchain) or_return
 
 	r.swapchain = new_swapchain
 	r.swapchain_images = img
 	r.swapchain_image_views = img_views
 
-	return true
+	return
 }
 
-recreate_swapchain :: proc(r: ^Renderer, config: SwapchainConfig) -> (ok: bool) {
+recreate_swapchain :: proc(r: ^Renderer, config: SwapchainConfig) -> (err: Error) {
 	vk.DeviceWaitIdle(r.device.device)
-
-	// Clean up old draw image
-	destroy_image(r, r.draw_image)
 
 	// clean up old swapchain without destroying it
 	vkb.swapchain_destroy_image_views(r.swapchain, r.swapchain_image_views)
@@ -455,33 +397,7 @@ recreate_swapchain :: proc(r: ^Renderer, config: SwapchainConfig) -> (ok: bool) 
 	// old swapchain used to create new one
 	create_swapchain(r, config) or_return
 
-	// Recreate draw image with new dimensions
-	r.draw_image = create_image(
-		r^,
-		"Draw Image",
-		.R16G16B16A16_SFLOAT,
-		{r.swapchain.extent.width, r.swapchain.extent.height, 1},
-		{.TRANSFER_SRC, .TRANSFER_DST, .STORAGE, .COLOR_ATTACHMENT},
-	)
-
-	// Update the descriptor set with the new image view
-	draw_image := hm.get(r.shader_resources.images, r.draw_image)
-	draw_image_info := vk.DescriptorImageInfo {
-		imageView   = draw_image.image_view,
-		imageLayout = .GENERAL,
-	}
-	write := vk.WriteDescriptorSet {
-		sType           = .WRITE_DESCRIPTOR_SET,
-		dstSet          = r.bindless_set,
-		dstBinding      = STORAGE_IMAGE_BINDING,
-		dstArrayElement = r.draw_image.idx,
-		descriptorType  = .STORAGE_IMAGE,
-		descriptorCount = 1,
-		pImageInfo      = &draw_image_info,
-	}
-	vk.UpdateDescriptorSets(r.device.device, 1, &write, 0, nil)
-
-	return true
+	return
 }
 
 
@@ -492,33 +408,15 @@ destroy_swapchain :: proc(r: ^Renderer) {
 	delete(r.swapchain_image_views)
 }
 
-get_queues :: proc(r: ^Renderer) -> (ok: bool) {
-	graphics_queue, graphics_queue_err := vkb.device_get_queue(r.device, .Graphics)
-	if graphics_queue_err != nil {
-		log.errorf("Failed to get graphics queue: %#v", graphics_queue_err)
-		return
-	}
+get_queues :: proc(r: ^Renderer) -> (err: Error) {
+	r.graphics_queue = vkb.device_get_queue(r.device, .Graphics) or_return
+	r.present_queue = vkb.device_get_queue(r.device, .Present) or_return
+	r.transfer_queue = vkb.device_get_queue(r.device, .Transfer) or_return
 
-	present_queue, present_queue_err := vkb.device_get_queue(r.device, .Present)
-	if present_queue_err != nil {
-		log.errorf("Failed to get present queue: %#v", present_queue_err)
-		return
-	}
-
-	transfer_queue, transfer_queue_err := vkb.device_get_queue(r.device, .Transfer)
-	if transfer_queue_err != nil {
-		log.errorf("Failed to get transfer queue: %#v", transfer_queue_err)
-		return
-	}
-
-	r.graphics_queue = graphics_queue
-	r.present_queue = present_queue
-	r.transfer_queue = transfer_queue
-
-	return true
+	return
 }
 
-create_sync_objects :: proc(r: ^Renderer) -> (ok: bool) {
+create_sync_objects :: proc(r: ^Renderer) -> (err: Error) {
 	semaphore_info := vk.SemaphoreCreateInfo {
 		sType = .SEMAPHORE_CREATE_INFO,
 	}
@@ -529,44 +427,30 @@ create_sync_objects :: proc(r: ^Renderer) -> (ok: bool) {
 	}
 
 	for &frame in r.frames {
-		if res := vk.CreateSemaphore(
-			r.device.device,
-			&semaphore_info,
-			nil,
-			&frame.swapchain_semaphore,
-		); res != .SUCCESS {
-			log.errorf("Failed to create frame swapchain semaphore: [%v]", res)
-			return
-		}
+		vkb.vk_check(
+			vk.CreateSemaphore(r.device.device, &semaphore_info, nil, &frame.swapchain_semaphore),
+		) or_return
 
-		if res := vk.CreateFence(r.device.device, &fence_info, nil, &frame.render_fence);
-		   res != .SUCCESS {
-			log.errorf("Failed to create frame render fence: [%v]", res)
-			return
-		}
+		vkb.vk_check(
+			vk.CreateFence(r.device.device, &fence_info, nil, &frame.render_fence),
+		) or_return
 	}
 
-	vk.CreateFence(r.device.device, &fence_info, nil, &r.imm_fence)
+	vkb.vk_check(vk.CreateFence(r.device.device, &fence_info, nil, &r.imm_fence)) or_return
 
 	image_count := len(r.swapchain_images)
 	r.render_semaphores = make([]vk.Semaphore, image_count)
-	defer if !ok {
+	defer if err != nil {
 		delete(r.render_semaphores)
 	}
 
 	for i in 0 ..< image_count {
-		if res := vk.CreateSemaphore(
-			r.device.device,
-			&semaphore_info,
-			nil,
-			&r.render_semaphores[i],
-		); res != .SUCCESS {
-			log.errorf("Failed to create render semaphore: [%v]", res)
-			return
-		}
+		vkb.vk_check(
+			vk.CreateSemaphore(r.device.device, &semaphore_info, nil, &r.render_semaphores[i]),
+		) or_return
 	}
 
-	return true
+	return
 }
 
 destroy_sync_objects :: proc(r: ^Renderer) {
@@ -601,96 +485,14 @@ record_command_buffer :: proc(
 		return
 	}
 
-	draw_image := hm.get(r.shader_resources.images, r.draw_image)
-	transition_vk_image(
-		buffer,
-		draw_image.image,
-		{.TOP_OF_PIPE},
-		{.COMPUTE_SHADER},
-		{},
-		{.SHADER_WRITE},
-		.UNDEFINED,
-		.GENERAL,
-	)
-
-	vk.CmdBindPipeline(buffer, .COMPUTE, r.compute_pipeline)
-	vk.CmdBindDescriptorSets(buffer, .COMPUTE, r.compute_layout, 0, 1, &r.bindless_set, 0, nil)
-	c_pc := Compute_Push_Constants {
-		inv_proj       = inv_proj,
-		camera_origin  = camera_origin,
-		output_texture = r.draw_image.idx,
-		chunk_buffer   = r.chunk_buffer.idx,
-	}
-	vk.CmdPushConstants(
-		buffer,
-		r.compute_layout,
-		{.COMPUTE},
-		0,
-		size_of(Compute_Push_Constants),
-		&c_pc,
-	)
-	vk.CmdDispatch(
-		buffer,
-		(r.swapchain.extent.width + 15) / 16,
-		(r.swapchain.extent.height + 15) / 16,
-		1,
-	)
-
-	transition_vk_image(
-		buffer,
-		draw_image.image,
-		{.COMPUTE_SHADER},
-		{.TRANSFER},
-		{.SHADER_WRITE},
-		{.TRANSFER_READ},
-		.GENERAL,
-		.TRANSFER_SRC_OPTIMAL,
-	)
-
 	transition_vk_image(
 		buffer,
 		r.swapchain_images[image_index],
-		{.TOP_OF_PIPE},
-		{.TRANSFER},
-		{},
-		{.TRANSFER_WRITE},
-		.UNDEFINED,
-		.TRANSFER_DST_OPTIMAL,
-	)
-
-	blit_region := vk.ImageBlit2 {
-		sType = .IMAGE_BLIT_2,
-		srcSubresource = {aspectMask = {.COLOR}, layerCount = 1},
-		srcOffsets = {
-			{0, 0, 0},
-			{i32(r.swapchain.extent.width), i32(r.swapchain.extent.height), 1},
-		},
-		dstSubresource = {aspectMask = {.COLOR}, layerCount = 1},
-		dstOffsets = {
-			{0, 0, 0},
-			{i32(r.swapchain.extent.width), i32(r.swapchain.extent.height), 1},
-		},
-	}
-	blit_info := vk.BlitImageInfo2 {
-		sType          = .BLIT_IMAGE_INFO_2,
-		srcImage       = draw_image.image,
-		srcImageLayout = .TRANSFER_SRC_OPTIMAL,
-		dstImage       = r.swapchain_images[image_index],
-		dstImageLayout = .TRANSFER_DST_OPTIMAL,
-		regionCount    = 1,
-		pRegions       = &blit_region,
-		filter         = .LINEAR,
-	}
-	vk.CmdBlitImage2(buffer, &blit_info)
-
-	transition_vk_image(
-		buffer,
-		r.swapchain_images[image_index],
-		{.TRANSFER},
 		{.COLOR_ATTACHMENT_OUTPUT},
-		{.TRANSFER_WRITE},
+		{.COLOR_ATTACHMENT_OUTPUT},
+		{},
 		{.COLOR_ATTACHMENT_WRITE},
-		.TRANSFER_DST_OPTIMAL,
+		.UNDEFINED,
 		.COLOR_ATTACHMENT_OPTIMAL,
 	)
 
@@ -715,7 +517,7 @@ record_command_buffer :: proc(
 		sType       = .RENDERING_ATTACHMENT_INFO,
 		imageView   = r.swapchain_image_views[image_index],
 		imageLayout = .COLOR_ATTACHMENT_OPTIMAL,
-		loadOp      = .LOAD,
+		loadOp      = .CLEAR,
 		storeOp     = .STORE,
 		clearValue  = clear_color,
 	}
@@ -764,8 +566,7 @@ record_command_buffer :: proc(
 		vertex_buffer_addr = hm.get(r.shader_resources.buffers, r.vertex_buffer).address.?,
 		index_buffer_addr  = hm.get(r.shader_resources.buffers, r.index_buffer).address.?,
 		mvp                = mvp,
-		sampler            = 0,
-		texture            = 0,
+		texture            = 1, // needs to change to keep track
 	}
 	vk.CmdPushConstants(
 		buffer,
@@ -790,7 +591,7 @@ record_command_buffer :: proc(
 		{.ALL_COMMANDS},
 		{.COLOR_ATTACHMENT_WRITE},
 		{},
-		.TRANSFER_DST_OPTIMAL,
+		.COLOR_ATTACHMENT_OPTIMAL,
 		.PRESENT_SRC_KHR,
 	)
 
@@ -802,26 +603,26 @@ record_command_buffer :: proc(
 	return true
 }
 
-begin_immediate_submit :: proc(r: ^Renderer) -> vk.CommandBuffer {
-	vk_check(vk.ResetFences(r.device.device, 1, &r.imm_fence))
-	vk_check(vk.ResetCommandBuffer(r.imm_command_buffer, {}))
+begin_immediate_submit :: proc(r: ^Renderer) -> (buffer: vk.CommandBuffer, err: Error) {
+	vkb.vk_check(vk.ResetFences(r.device.device, 1, &r.imm_fence)) or_return
+	vkb.vk_check(vk.ResetCommandBuffer(r.imm_command_buffer, {})) or_return
 
-	cmd := r.imm_command_buffer
+	buffer = r.imm_command_buffer
 
 	cmd_begin_info := vk.CommandBufferBeginInfo {
 		sType = .COMMAND_BUFFER_BEGIN_INFO,
 		flags = {.ONE_TIME_SUBMIT},
 	}
 
-	vk_check(vk.BeginCommandBuffer(cmd, &cmd_begin_info))
+	vkb.vk_check(vk.BeginCommandBuffer(buffer, &cmd_begin_info)) or_return
 
-	return cmd
+	return
 }
 
-end_immediate_submit :: proc(r: ^Renderer) {
+end_immediate_submit :: proc(r: ^Renderer) -> (err: Error) {
 	cmd := r.imm_command_buffer
 
-	vk_check(vk.EndCommandBuffer(cmd))
+	vkb.vk_check(vk.EndCommandBuffer(cmd)) or_return
 
 	cmd_info := vk.CommandBufferSubmitInfo {
 		sType         = .COMMAND_BUFFER_SUBMIT_INFO,
@@ -839,9 +640,11 @@ end_immediate_submit :: proc(r: ^Renderer) {
 
 	// submit command buffer to the queue and execute it.
 	// imm_fence will now block until the graphic commands finish execution
-	vk_check(vk.QueueSubmit2(r.graphics_queue, 1, &submit, r.imm_fence))
+	vkb.vk_check(vk.QueueSubmit2(r.graphics_queue, 1, &submit, r.imm_fence)) or_return
 
-	vk_check(vk.WaitForFences(r.device.device, 1, &r.imm_fence, true, 9_999_999_999))
+	vkb.vk_check(vk.WaitForFences(r.device.device, 1, &r.imm_fence, true, 9_999_999_999)) or_return
+
+	return
 }
 
 mvp: linalg.Matrix4f32
@@ -906,7 +709,7 @@ indices :: []u32 {
 // odinfmt: enable
 
 
-load_texture_from_file :: proc(r: ^Renderer, path: cstring) -> (image_id: Image_Id, ok: bool) {
+load_texture_from_file :: proc(r: ^Renderer, path: cstring) -> (image_id: Image_Id, err: Error) {
 	w, h, c: i32
 	pixels := image.load(path, &w, &h, &c, 4)
 	if pixels == nil {
@@ -926,17 +729,23 @@ load_texture_from_file :: proc(r: ^Renderer, path: cstring) -> (image_id: Image_
 		img_size,
 		{.TRANSFER_SRC},
 		{.Host_Access_Sequential_Write, .Mapped},
-	)
+	) or_return
 	defer destroy_buffer(r, staging)
 	stag_buf := hm.get(r.shader_resources.buffers, staging)
 	mem.copy(stag_buf.info.mapped_data, pixels, img_size)
 
 	// Create the GPU Image
-	image_id = create_image(r^, "texture", .R8G8B8A8_SRGB, extent, {.TRANSFER_DST, .SAMPLED})
+	image_id = create_image(
+		r^,
+		"texture",
+		.R8G8B8A8_SRGB,
+		extent,
+		{.TRANSFER_DST, .SAMPLED},
+	) or_return
 	tex := hm.get(r.shader_resources.images, image_id)
 
 	// copy staging -> image
-	cb := begin_immediate_submit(r)
+	cb := begin_immediate_submit(r) or_return
 
 	transition_vk_image(
 		cb,
@@ -968,10 +777,10 @@ load_texture_from_file :: proc(r: ^Renderer, path: cstring) -> (image_id: Image_
 
 	end_immediate_submit(r)
 
-	return image_id, true
+	return
 }
 
-draw_frame :: proc(r: ^Renderer) -> (ok: bool) {
+draw_frame :: proc(r: ^Renderer) -> (err: Error) {
 	frame := &r.frames[r.frame_index]
 	swap_conf := SwapchainConfig {
 		extent       = r.swapchain.extent,
@@ -993,7 +802,7 @@ draw_frame :: proc(r: ^Renderer) -> (ok: bool) {
 		return recreate_swapchain(r, swap_conf)
 	} else if res != .SUCCESS && res != .SUBOPTIMAL_KHR {
 		log.errorf("Failed to acquire swap chain image: [%v]", res)
-		return
+		return vkb.Error(vkb.General_Error{result = res})
 	}
 
 	vk.ResetFences(r.device.device, 1, &frame.render_fence)
@@ -1028,11 +837,7 @@ draw_frame :: proc(r: ^Renderer) -> (ok: bool) {
 		pSignalSemaphoreInfos    = &signal_info,
 	}
 
-	if res := vk.QueueSubmit2(r.graphics_queue, 1, &submit_info, frame.render_fence);
-	   res != .SUCCESS {
-		log.errorf("failed to submit draw command buffer: [%v]", res)
-		return
-	}
+	vkb.vk_check(vk.QueueSubmit2(r.graphics_queue, 1, &submit_info, frame.render_fence)) or_return
 
 	present_info := vk.PresentInfoKHR {
 		sType              = .PRESENT_INFO_KHR,
@@ -1048,7 +853,7 @@ draw_frame :: proc(r: ^Renderer) -> (ok: bool) {
 		return recreate_swapchain(r, swap_conf)
 	} else if res != .SUCCESS {
 		log.errorf("failed to present swapchain image: [%v]", res)
-		return
+		return vkb.Error(vkb.General_Error{result = res})
 	}
 
 	// When `MAX_FRAMES_IN_FLIGHT` is a power of 2 you can update the current frame without modulo
@@ -1059,5 +864,6 @@ draw_frame :: proc(r: ^Renderer) -> (ok: bool) {
 		r.frame_index = (r.frame_index + 1) % MAX_FRAMES_IN_FLIGHT
 	}
 
-	return true
+	return
 }
+

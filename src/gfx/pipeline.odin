@@ -5,62 +5,47 @@ import "core:os"
 
 import vk "vendor:vulkan"
 
+import vkb "vkbootstrap"
+
 load_shader_module :: proc(
 	r: ^Renderer,
 	file_name: string,
 ) -> (
 	module: vk.ShaderModule,
-	ok: bool,
+	err: Error,
 ) {
-	bytes := os.read_entire_file(file_name) or_return
+	bytes, read_ok := os.read_entire_file(file_name)
+	if !read_ok {
+		log.fatalf("failed to read file %s", file_name)
+		return
+	}
 	defer delete(bytes)
 
 	return create_shader_module(r, bytes)
 }
 
-create_shader_module :: proc(r: ^Renderer, code: []u8) -> (module: vk.ShaderModule, ok: bool) {
+create_shader_module :: proc(r: ^Renderer, code: []u8) -> (module: vk.ShaderModule, err: Error) {
 	vertex_module_info := vk.ShaderModuleCreateInfo {
 		sType    = .SHADER_MODULE_CREATE_INFO,
 		codeSize = len(code),
 		pCode    = cast(^u32)raw_data(code),
 	}
 
-	if res := vk.CreateShaderModule(r.device.device, &vertex_module_info, nil, &module);
-	   res != .SUCCESS {
-		log.fatalf("failed to create shader module: [%v]", res)
-		return
-	}
+	vkb.vk_check(vk.CreateShaderModule(r.device.device, &vertex_module_info, nil, &module)) or_return
 
-	return module, true
+	return
 }
 
-create_graphics_pipeline :: proc(r: ^Renderer) -> (ok: bool) {
+create_graphics_pipeline :: proc(r: ^Renderer) -> (err: Error) {
 	module := load_shader_module(r, "shaders/slang.spv") or_return
 	defer vk.DestroyShaderModule(r.device.device, module, nil)
 
-	// Create stage info for each shader
-	vertex_stage_info := vk.PipelineShaderStageCreateInfo {
-		sType  = .PIPELINE_SHADER_STAGE_CREATE_INFO,
-		stage  = {.VERTEX},
-		module = module,
-		pName  = "vertMain",
-	}
-
-	fragment_stage_info := vk.PipelineShaderStageCreateInfo {
-		sType  = .PIPELINE_SHADER_STAGE_CREATE_INFO,
-		stage  = {.FRAGMENT},
-		module = module,
-		pName  = "fragMain",
-	}
-
-	shader_stages := []vk.PipelineShaderStageCreateInfo{vertex_stage_info, fragment_stage_info}
-
 	// Dynamic state
-	dynamic_states := []vk.DynamicState{.VIEWPORT, .SCISSOR}
+	dynamic_states := [?]vk.DynamicState{.VIEWPORT, .SCISSOR}
 	dynamic_state := vk.PipelineDynamicStateCreateInfo {
 		sType             = .PIPELINE_DYNAMIC_STATE_CREATE_INFO,
 		dynamicStateCount = cast(u32)len(dynamic_states),
-		pDynamicStates    = raw_data(dynamic_states),
+		pDynamicStates    = &dynamic_states[0],
 	}
 
 	// State for vertex input, empty for aura
@@ -178,19 +163,37 @@ create_graphics_pipeline :: proc(r: ^Renderer) -> (ok: bool) {
 		return
 	}
 
+	color_format := r.swapchain.image_format
 	pipeline_rendering_info := vk.PipelineRenderingCreateInfo {
 		sType                   = .PIPELINE_RENDERING_CREATE_INFO,
 		colorAttachmentCount    = 1,
-		pColorAttachmentFormats = raw_data([]vk.Format{r.swapchain.image_format}),
+		pColorAttachmentFormats = &color_format,
 		depthAttachmentFormat   = .D32_SFLOAT,
 	}
+
+	// Create stage info for each shader
+	vertex_stage_info := vk.PipelineShaderStageCreateInfo {
+		sType  = .PIPELINE_SHADER_STAGE_CREATE_INFO,
+		stage  = {.VERTEX},
+		module = module,
+		pName  = "vertMain",
+	}
+
+	fragment_stage_info := vk.PipelineShaderStageCreateInfo {
+		sType  = .PIPELINE_SHADER_STAGE_CREATE_INFO,
+		stage  = {.FRAGMENT},
+		module = module,
+		pName  = "fragMain",
+	}
+
+	shader_stages := [?]vk.PipelineShaderStageCreateInfo{vertex_stage_info, fragment_stage_info}
 
 	// pipeline finally
 	pipeline_info := vk.GraphicsPipelineCreateInfo {
 		sType               = .GRAPHICS_PIPELINE_CREATE_INFO,
 		pNext               = &pipeline_rendering_info,
 		stageCount          = u32(len(shader_stages)),
-		pStages             = raw_data(shader_stages),
+		pStages             = &shader_stages[0],
 		pVertexInputState   = &vertex_input_info,
 		pInputAssemblyState = &input_assembly_info,
 		pViewportState      = &viewport_state,
@@ -202,63 +205,14 @@ create_graphics_pipeline :: proc(r: ^Renderer) -> (ok: bool) {
 		layout              = r.pipeline_layout,
 	}
 
-	if res := vk.CreateGraphicsPipelines(
+	vkb.vk_check(vk.CreateGraphicsPipelines(
 		r.device.device,
 		0,
 		1,
 		&pipeline_info,
 		nil,
 		&r.graphics_pipeline,
-	); res != .SUCCESS {
-		log.fatalf("Failed to create graphics pipeline: [%v]", res)
-		return
-	}
+	)) or_return
 
-	return true
-}
-
-create_compute_pipeline :: proc(r: ^Renderer) -> (ok: bool) {
-	module := load_shader_module(r, "shaders/raymarch.spv") or_return
-	defer vk.DestroyShaderModule(r.device.device, module, nil)
-
-	// Push Constants for Camera Data
-	pc_range := vk.PushConstantRange {
-		stageFlags = {.COMPUTE},
-		offset     = 0,
-		size       = size_of(Compute_Push_Constants),
-	}
-
-	layout_info := vk.PipelineLayoutCreateInfo {
-		sType                  = .PIPELINE_LAYOUT_CREATE_INFO,
-		setLayoutCount         = 1,
-		pSetLayouts            = &r.bindless_layout,
-		pushConstantRangeCount = 1,
-		pPushConstantRanges    = &pc_range,
-	}
-	vk_check(vk.CreatePipelineLayout(r.device.device, &layout_info, nil, &r.compute_layout))
-	when ODIN_DEBUG {
-		name_info := vk.DebugUtilsObjectNameInfoEXT {
-			sType = .DEBUG_UTILS_OBJECT_NAME_INFO_EXT,
-			objectType = .PIPELINE_LAYOUT,
-			objectHandle = u64(r.compute_layout),
-			pObjectName = "compute layout",
-		}
-		vk.SetDebugUtilsObjectNameEXT(r.device.device, &name_info)
-	}
-
-	pipeline_info := vk.ComputePipelineCreateInfo {
-		sType = .COMPUTE_PIPELINE_CREATE_INFO,
-		stage = {
-			sType = .PIPELINE_SHADER_STAGE_CREATE_INFO,
-			stage = {.COMPUTE},
-			module = module,
-			pName = "main",
-		},
-		layout = r.compute_layout,
-	}
-
-	vk_check(
-		vk.CreateComputePipelines(r.device.device, 0, 1, &pipeline_info, nil, &r.compute_pipeline),
-	)
-	return true
+	return
 }

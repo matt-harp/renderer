@@ -9,6 +9,7 @@ struct Vertex {
 struct PushConstants {
   float4x4 mvp;
   Vertex *buffer;
+  TextureHandle2D Texture;
   uint *indices;
   uint texture_id;
   uint sampler_id;
@@ -40,5 +41,5 @@ VSOutput vertMain(uint vertexID: SV_VertexID) {
 
 [shader("fragment")]
 float4 fragMain(VSOutput vertIn) : SV_TARGET {
-  return textures[pc.texture_id].Sample(samplers[pc.sampler_id], vertIn.uv);
+  return pc.Texture.Instance.Sample(LinearRepeat, vertIn.uv);
 }

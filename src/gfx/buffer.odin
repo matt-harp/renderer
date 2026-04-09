@@ -3,7 +3,9 @@ package gfx
 import "core:strings"
 import vma "thirdparty:odin-vma"
 import vk "vendor:vulkan"
+
 import hm "handle_map"
+import vkb "vkbootstrap"
 
 create_buffer :: proc(
 	r: Renderer,
@@ -15,6 +17,7 @@ create_buffer :: proc(
 	loc := #caller_location,
 ) -> (
 	handle: Buffer_Id,
+	err: Error,
 ) {
 	assert(r.allocator != nil, "VMA needs to be initialized first")
 	buffer := GPUBuffer {
@@ -33,7 +36,7 @@ create_buffer :: proc(
 		flags = vma_flags,
 	}
 
-	vk_check(
+	vkb.vk_check(
 		vma.create_buffer(
 			r.allocator,
 			buffer_create_info,
@@ -42,7 +45,8 @@ create_buffer :: proc(
 			&buffer.allocation,
 			&buffer.info,
 		),
-	)
+	) or_return
+	
 	when ODIN_DEBUG {
 		c_str := strings.clone_to_cstring(name)
 		vma.set_allocation_name(r.allocator, buffer.allocation, c_str)
@@ -59,7 +63,7 @@ create_buffer :: proc(
 
 	handle = hm.add(&r.shader_resources.buffers, buffer)
 
-	return handle
+	return
 }
 
 destroy_buffer :: proc(r: ^Renderer, handle: Buffer_Id) {
