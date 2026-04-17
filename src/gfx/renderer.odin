@@ -83,10 +83,8 @@ Renderer :: struct {
 }
 
 Push_Constants :: struct {
-	mvp:                linalg.Matrix4f32,
-	vertex_buffer_addr: vk.DeviceAddress,
-	texture:            u32,
-	index_buffer_addr:  vk.DeviceAddress,
+	model:    linalg.Matrix4f32,
+	viewProj: linalg.Matrix4f32,
 }
 
 init_renderer :: proc(r: ^Renderer) -> (err: Error) {
@@ -563,15 +561,15 @@ record_command_buffer :: proc(
 	vk.CmdBindDescriptorSets(buffer, .GRAPHICS, r.pipeline_layout, 0, 1, &r.bindless_set, 0, nil)
 
 	pc := Push_Constants {
-		vertex_buffer_addr = hm.get(r.shader_resources.buffers, r.vertex_buffer).address.?,
-		index_buffer_addr  = hm.get(r.shader_resources.buffers, r.index_buffer).address.?,
-		mvp                = mvp,
-		texture            = 1, // needs to change to keep track
+		// vertex_buffer_addr = hm.get(r.shader_resources.buffers, r.vertex_buffer).address.?,
+		// index_buffer_addr  = hm.get(r.shader_resources.buffers, r.index_buffer).address.?,
+		model                = model,
+		viewProj =  projection * view,
 	}
 	vk.CmdPushConstants(
 		buffer,
 		r.pipeline_layout,
-		{.VERTEX, .FRAGMENT},
+		{.TASK_EXT, .MESH_EXT, .FRAGMENT},
 		0,
 		size_of(Push_Constants),
 		&pc,
@@ -580,7 +578,7 @@ record_command_buffer :: proc(
 	vk.CmdSetViewport(buffer, 0, 1, &viewport)
 	vk.CmdSetScissor(buffer, 0, 1, &scissor)
 
-	vk.CmdDraw(buffer, u32(len(indices)), 1, 0, 0)
+	vk.CmdDrawMeshTasksEXT(buffer, 1, 1, 1)
 
 	vk.CmdEndRendering(buffer)
 
@@ -647,10 +645,9 @@ end_immediate_submit :: proc(r: ^Renderer) -> (err: Error) {
 	return
 }
 
-mvp: linalg.Matrix4f32
-inv_view: linalg.Matrix4f32
-inv_proj: linalg.Matrix4f32
-inv_model: linalg.Matrix4f32
+model: linalg.Matrix4f32
+view: linalg.Matrix4f32
+projection: linalg.Matrix4f32
 camera_origin: [3]f32
 
 Vertex :: struct {
@@ -802,6 +799,30 @@ draw_frame :: proc(r: ^Renderer) -> (err: Error) {
 		return recreate_swapchain(r, swap_conf)
 	} else if res != .SUCCESS && res != .SUBOPTIMAL_KHR {
 		log.errorf("Failed to acquire swap chain image: [%v]", res)
+		counts := vk.DeviceFaultCountsEXT{sType = .DEVICE_FAULT_COUNTS_EXT}
+		if res == .ERROR_DEVICE_LOST && vk.GetDeviceFaultInfoEXT(r.device.device, &counts, nil) == .SUCCESS {
+			info := vk.DeviceFaultInfoEXT{sType = .DEVICE_FAULT_INFO_EXT}
+
+			address_infos := make([]vk.DeviceFaultAddressInfoEXT, counts.addressInfoCount)
+			vendor_infos := make([]vk.DeviceFaultVendorInfoEXT, counts.vendorInfoCount)
+			defer delete(address_infos)
+			defer delete(vendor_infos)
+
+			info.pAddressInfos = raw_data(address_infos)
+			info.pVendorInfos = raw_data(vendor_infos)
+
+			if vk.GetDeviceFaultInfoEXT(r.device.device, &counts, &info) == .SUCCESS {
+				log.errorf("Device Fault: %s", cstring(&info.description[0]))
+				for i in 0 ..< counts.addressInfoCount {
+					a := address_infos[i]
+					log.errorf("  Address Info [%d]: Type %v, Address 0x%x, Precision %v", i, a.addressType, a.reportedAddress, a.addressPrecision)
+				}
+				for i in 0 ..< counts.vendorInfoCount {
+					v := vendor_infos[i]
+					log.errorf("  Vendor Info [%d]: %s, Code: %v, Data: %v", i, cstring(&v.description[0]), v.vendorFaultCode, v.vendorFaultData)
+				}
+			}
+		}
 		return vkb.Error(vkb.General_Error{result = res})
 	}
 
@@ -866,4 +887,3 @@ draw_frame :: proc(r: ^Renderer) -> (err: Error) {
 
 	return
 }
-

@@ -21,15 +21,7 @@
         {
           devShells.default = pkgs.mkShell.override { stdenv = pkgs.clangStdenv; } rec {
             nativeBuildInputs = with pkgs; [
-              (odin.overrideAttrs (old: {
-                version = "dev-2026-01";
-                src = fetchFromGitHub {
-                  owner = "odin-lang";
-                  repo = "Odin";
-                  tag = "dev-2026-01";
-                  hash = "sha256-YvaEe69YSS/iQeCRyNQrslaY5ZgDW45y0rjb04eYpcw=";
-                };
-              }))
+              odin
               vulkan-validation-layers
               shader-slang
               glfw

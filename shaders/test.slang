@@ -1,45 +1,75 @@
-import common;
-
-struct Vertex {
-  float3 inPosition;
-  float3 inColor;
-  float2 uv;
+static const float4 positions[3] = {
+  float4(-1.0, 1.0, 0.0, 1.0),
+  float4( 0.0, -1.0, 0.0, 1.0),
+  float4( 1.0, 1.0, 0.0, 1.0)
 };
 
-struct PushConstants {
-  float4x4 mvp;
-  Vertex *buffer;
-  TextureHandle2D Texture;
-  uint *indices;
-  uint texture_id;
-  uint sampler_id;
+struct SceneData {
+
+};
+
+struct VertexOutput
+{
+  float4 position : SV_Position;
+  float4 color : TEXCOORD0;
+};
+
+struct DummyPayLoad
+{
+  uint dummyData;
+};
+
+struct PushConstant {
+  float4x4 modelMatrix;
+  float4x4 viewProj;
+};
+
+[[vk::push_constant]]
+PushConstant pushConstant;
+
+[shader("task")]
+[numthreads(1, 1, 1)]
+void taskMain()
+{
+  DummyPayLoad localPayload;
+  DispatchMesh(3, 1, 1, localPayload);
 }
 
-[[vk::push_constant]] PushConstants pc;
+[shader("mesh")]
+[outputtopology("triangle")]
+[numthreads(1, 1, 1)]
+void meshMain(
+	in payload DummyPayLoad payload,
+	out vertices VertexOutput vertices[3],
+	out indices uint3 triangles[1],
+	uint3 DispatchThreadID : SV_DispatchThreadID,
+	uint3 groupId : SV_GroupID
+)
+{
+	SetMeshOutputCounts(3, 1);
+	float4x4 mvp = mul(pushConstant.viewProj, pushConstant.modelMatrix);
+	// float4x4 mvp = pushConstant.modelMatrix;
+	uint meshletID = groupId.x;
+	// Hash-based per-meshlet coloring for visualization
+	uint hash = meshletID * 747796405u + 2891336453u;
+	float3 color = float3(
+		(hash & 0xFF) / 255.0,
+		((hash >> 8) & 0xFF) / 255.0,
+		((hash >> 16) & 0xFF) / 255.0
+	);
 
-struct VSOutput {
-  float4 pos : SV_Position;
-  float3 color : COLOR;
-  float2 uv: TEXCOORD;
-};
+	float4 offset = float4(0.0, 0.0, float(DispatchThreadID.x), 0.0);
 
-[shader("vertex")]
-VSOutput vertMain(uint vertexID: SV_VertexID) {
-  VSOutput output;
+	for (uint i = 0; i < 3; i++) {
+		vertices[i].position = mul(mvp, positions[i] + offset);
+		vertices[i].color = float4(color, 1.0f);
+	}
 
-  uint index = pc.indices[vertexID];
-  Vertex v = pc.buffer[index];
-
-  float4 localPos = float4(v.inPosition, 1.0);
-  output.pos = mul(pc.mvp, localPos);
-  // printf("z = %f", output.pos.z);
-  output.color = v.inColor;
-  output.uv = v.uv;
-
-  return output;
+	triangles[0] = uint3(0, 1, 2);
 }
 
 [shader("fragment")]
-float4 fragMain(VSOutput vertIn) : SV_TARGET {
-  return pc.Texture.Instance.Sample(LinearRepeat, vertIn.uv);
+float4 fragmentMain(VertexOutput input)
+{
+  return input.color;
 }

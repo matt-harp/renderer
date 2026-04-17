@@ -103,10 +103,9 @@ main :: proc() {
 
 		proj := gfx.matrix4_perspective_f32(camera.fov * (math.PI / 180.0), aspect, camera.near, camera.far)
 
-		gfx.mvp = proj * view * model
-		gfx.inv_view = linalg.inverse(view)
-		gfx.inv_proj = linalg.inverse(proj * camera_get_view_matrix(&camera, false))
-		gfx.inv_model = linalg.inverse(model)
+		gfx.model = model
+		gfx.view = view
+		gfx.projection = proj
 		gfx.camera_origin = camera.pos
 
 		if draw_err := gfx.draw_frame(&renderer); draw_err != nil {

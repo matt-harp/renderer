@@ -1,5 +1,6 @@
 package gfx
 
+import "core:log"
 import glfw "vendor:glfw"
 import vk "vendor:vulkan"
 
@@ -82,6 +83,18 @@ init_device :: proc(r: ^Renderer) -> (err: Error) {
 		)
 	}
 
+	mesh_features := vk.PhysicalDeviceMeshShaderFeaturesEXT {
+		sType = .PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT,
+		taskShader = true,
+		meshShader = true,
+	}
+	ext_features := []vk.PhysicalDeviceMeshShaderFeaturesEXT{mesh_features}
+	vkb.physical_device_enable_extensions_with_features(vkb_physical_device, {vk.EXT_MESH_SHADER_EXTENSION_NAME}, ext_features)
+
+	if vkb.physical_device_enable_extension_if_present(vkb_physical_device, vk.EXT_DEVICE_FAULT_EXTENSION_NAME) {
+		log.infof("Enabled VK_EXT_device_fault")
+	}
+
 	// Device
 	device_builder := vkb.create_device_builder(vkb_physical_device)
 	defer vkb.destroy_device_builder(device_builder)
@@ -120,7 +133,6 @@ init_device :: proc(r: ^Renderer) -> (err: Error) {
 		synchronization2 = true,
 	}
 	vkb.device_builder_add_pnext(device_builder, &vk13)
-
 
 	vkb_device := vkb.device_builder_build(device_builder) or_return
 

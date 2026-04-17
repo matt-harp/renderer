@@ -14,8 +14,8 @@ load_shader_module :: proc(
 	module: vk.ShaderModule,
 	err: Error,
 ) {
-	bytes, read_ok := os.read_entire_file(file_name)
-	if !read_ok {
+	bytes, read_err := os.read_entire_file(file_name, context.allocator)
+	if read_err != nil {
 		log.fatalf("failed to read file %s", file_name)
 		return
 	}
@@ -140,7 +140,7 @@ create_graphics_pipeline :: proc(r: ^Renderer) -> (err: Error) {
 
 	// Pipeline layout
 	pc_range := vk.PushConstantRange {
-		stageFlags = {.VERTEX, .FRAGMENT},
+		stageFlags = {.TASK_EXT, .MESH_EXT, .FRAGMENT},
 		offset     = 0,
 		size       = size_of(Push_Constants),
 	}
@@ -172,21 +172,28 @@ create_graphics_pipeline :: proc(r: ^Renderer) -> (err: Error) {
 	}
 
 	// Create stage info for each shader
-	vertex_stage_info := vk.PipelineShaderStageCreateInfo {
+	task_stage_info := vk.PipelineShaderStageCreateInfo {
 		sType  = .PIPELINE_SHADER_STAGE_CREATE_INFO,
-		stage  = {.VERTEX},
+		stage  = {.TASK_EXT},
 		module = module,
-		pName  = "vertMain",
+		pName  = "taskMain",
+	}
+
+	mesh_stage_info := vk.PipelineShaderStageCreateInfo {
+		sType  = .PIPELINE_SHADER_STAGE_CREATE_INFO,
+		stage  = {.MESH_EXT},
+		module = module,
+		pName  = "meshMain",
 	}
 
 	fragment_stage_info := vk.PipelineShaderStageCreateInfo {
 		sType  = .PIPELINE_SHADER_STAGE_CREATE_INFO,
 		stage  = {.FRAGMENT},
 		module = module,
-		pName  = "fragMain",
+		pName  = "fragmentMain",
 	}
 
-	shader_stages := [?]vk.PipelineShaderStageCreateInfo{vertex_stage_info, fragment_stage_info}
+	shader_stages := [?]vk.PipelineShaderStageCreateInfo{task_stage_info, mesh_stage_info, fragment_stage_info}
 
 	// pipeline finally
 	pipeline_info := vk.GraphicsPipelineCreateInfo {

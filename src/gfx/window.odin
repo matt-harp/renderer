@@ -43,8 +43,6 @@ create_glfw_window :: proc(
 		err = Window_Error.Creation_Failed
 		return
 	}
-	
-	err = Window_Error.Creation_Failed
 
 	return
 }
