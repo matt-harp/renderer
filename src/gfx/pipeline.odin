@@ -49,20 +49,20 @@ create_graphics_pipeline :: proc(r: ^Renderer) -> (err: Error) {
 	}
 
 	// State for vertex input, empty for aura
-	vertex_input_info := vk.PipelineVertexInputStateCreateInfo {
-		sType = .PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-		// vertexBindingDescriptionCount   = 0,
-		// pVertexBindingDescriptions      = nil,
-		// vertexAttributeDescriptionCount = u32(len(vert_attr_desc)),
-		// pVertexAttributeDescriptions    = raw_data(vert_attr_desc),
-	}
+	// vertex_input_info := vk.PipelineVertexInputStateCreateInfo {
+	// 	sType = .PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+	// 	// vertexBindingDescriptionCount   = 0,
+	// 	// pVertexBindingDescriptions      = nil,
+	// 	// vertexAttributeDescriptionCount = u32(len(vert_attr_desc)),
+	// 	// pVertexAttributeDescriptions    = raw_data(vert_attr_desc),
+	// }
 
 	// State for assembly
-	input_assembly_info := vk.PipelineInputAssemblyStateCreateInfo {
-		sType                  = .PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-		topology               = .TRIANGLE_LIST,
-		primitiveRestartEnable = false,
-	}
+	// input_assembly_info := vk.PipelineInputAssemblyStateCreateInfo {
+	// 	sType                  = .PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+	// 	topology               = .TRIANGLE_LIST,
+	// 	primitiveRestartEnable = false,
+	// }
 
 	// State for viewport scissor
 	viewport := vk.Viewport {
@@ -201,8 +201,8 @@ create_graphics_pipeline :: proc(r: ^Renderer) -> (err: Error) {
 		pNext               = &pipeline_rendering_info,
 		stageCount          = u32(len(shader_stages)),
 		pStages             = &shader_stages[0],
-		pVertexInputState   = &vertex_input_info,
-		pInputAssemblyState = &input_assembly_info,
+		// pVertexInputState   = &vertex_input_info,
+		// pInputAssemblyState = &input_assembly_info,
 		pViewportState      = &viewport_state,
 		pDepthStencilState  = &depth_stencil_state,
 		pRasterizationState = &rasteriser,

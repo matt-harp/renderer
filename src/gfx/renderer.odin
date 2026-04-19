@@ -11,8 +11,9 @@ import vk "vendor:vulkan"
 import hm "handle_map"
 import vma "thirdparty:odin-vma"
 import vkb "vkbootstrap"
+import meshopt "thirdparty:odin-meshoptimizer"
 
-MAX_FRAMES_IN_FLIGHT :: 2
+MAX_FRAMES_IN_FLIGHT :: 1
 MINIMUM_API_VERSION :: vk.API_VERSION_1_3
 
 Vma_Error :: union {}
@@ -559,6 +560,8 @@ record_command_buffer :: proc(
 	vk.CmdBindPipeline(buffer, .GRAPHICS, r.graphics_pipeline)
 
 	vk.CmdBindDescriptorSets(buffer, .GRAPHICS, r.pipeline_layout, 0, 1, &r.bindless_set, 0, nil)
+
+	meshopt.meshopt_buildMeshletsBound(30, 64, 64)
 
 	pc := Push_Constants {
 		// vertex_buffer_addr = hm.get(r.shader_resources.buffers, r.vertex_buffer).address.?,

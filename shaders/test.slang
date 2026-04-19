@@ -16,7 +16,7 @@ struct VertexOutput
 
 struct DummyPayLoad
 {
-  uint dummyData;
+  uint4 dummyData;
 };
 
 struct PushConstant {
@@ -31,7 +31,9 @@ PushConstant pushConstant;
 [numthreads(1, 1, 1)]
 void taskMain()
 {
-  DummyPayLoad localPayload;
+  DummyPayLoad localPayload = {
+  	uint4(0)
+  };
   DispatchMesh(3, 1, 1, localPayload);
 }
 
@@ -66,6 +68,7 @@ void meshMain(
 	}
 
 	triangles[0] = uint3(0, 1, 2);
+	printf("mesh shader return");
 }
 
 [shader("fragment")]

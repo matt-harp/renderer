@@ -148,4 +148,3 @@ destroy_gpu_resources :: proc(r: ^Renderer) {
 		vk.DestroySampler(r.device.device, sampler, nil)
 	}
 }
-

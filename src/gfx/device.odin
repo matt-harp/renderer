@@ -111,7 +111,7 @@ init_device :: proc(r: ^Renderer) -> (err: Error) {
 		sType                                         = .PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
 		bufferDeviceAddress                           = true,
 		scalarBlockLayout                             = true,
-		// descriptorIndexing                           = true,
+		descriptorIndexing                           = true,
 		// shaderSampledImageArrayNonUniformIndexing    = true,
 		runtimeDescriptorArray                        = true,
 		// descriptorBindingVariableDescriptorCount     = true,
