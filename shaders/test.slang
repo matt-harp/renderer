@@ -50,7 +50,6 @@ void meshMain(
 {
 	SetMeshOutputCounts(3, 1);
 	float4x4 mvp = mul(pushConstant.viewProj, pushConstant.modelMatrix);
-	// float4x4 mvp = pushConstant.modelMatrix;
 	uint meshletID = groupId.x;
 	// Hash-based per-meshlet coloring for visualization
 	uint hash = meshletID * 747796405u + 2891336453u;
@@ -68,7 +67,6 @@ void meshMain(
 	}
 
 	triangles[0] = uint3(0, 1, 2);
-	printf("mesh shader return");
 }
 
 [shader("fragment")]

@@ -1,8 +1,12 @@
 {
 	"$schema": "https://raw.githubusercontent.com/DanielGavin/ols/master/misc/ols.schema.json",
-	"collections": [
-		{ "name": "thirdparty", "path": "./thirdparty" }
-	],
-	"enable_references": true,
-	"checker_args": "-vet -debug -vet-cast -vet-style -vet-using-param -vet-tabs -strict-style -disallow-do -warnings-as-errors"
+	"collections": [{ "name": "thirdparty", "path": "./thirdparty" }],
+	"checker_args": "-vet -debug -vet-cast -vet-style -vet-using-param -strict-style -disallow-do -warnings-as-errors",
+	"profile": "default",
+	"profiles": [
+		{
+			"name": "default",
+			"checker_path": ["src"]
+		}
+	]
 }

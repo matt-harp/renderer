@@ -9,9 +9,9 @@ import glfw "vendor:glfw"
 import vk "vendor:vulkan"
 
 import hm "handle_map"
+import meshopt "thirdparty:odin-meshoptimizer"
 import vma "thirdparty:odin-vma"
 import vkb "vkbootstrap"
-import meshopt "thirdparty:odin-meshoptimizer"
 
 MAX_FRAMES_IN_FLIGHT :: 1
 MINIMUM_API_VERSION :: vk.API_VERSION_1_3
@@ -72,10 +72,6 @@ Renderer :: struct {
 
 	// gbuffer
 	depth_image:           Image_Id,
-
-	// buffers
-	vertex_buffer:         Buffer_Id,
-	index_buffer:          Buffer_Id,
 
 	// bindless
 	bindless_layout:       vk.DescriptorSetLayout,
@@ -270,27 +266,6 @@ init_renderer :: proc(r: ^Renderer) -> (err: Error) {
 
 	// create gbuffers
 	{
-		r.vertex_buffer = create_buffer(
-			r^,
-			Vertex,
-			"Vertex Buffer",
-			len(vertices),
-			{.VERTEX_BUFFER, .SHADER_DEVICE_ADDRESS},
-			{.Host_Access_Sequential_Write, .Mapped},
-		) or_return
-		vert_buf := hm.get(r.shader_resources.buffers, r.vertex_buffer)
-		mem.copy(vert_buf.info.mapped_data, raw_data(vertices), int(vert_buf.info.size))
-		r.index_buffer = create_buffer(
-			r^,
-			u32,
-			"Index Buffer",
-			len(indices),
-			{.INDEX_BUFFER, .SHADER_DEVICE_ADDRESS},
-			{.Host_Access_Sequential_Write, .Mapped},
-		) or_return
-		idx_buf := hm.get(r.shader_resources.buffers, r.index_buffer)
-		mem.copy(idx_buf.info.mapped_data, raw_data(indices), int(idx_buf.info.size))
-
 		extent := vk.Extent3D{r.swapchain.extent.width, r.swapchain.extent.height, 1}
 		r.depth_image = create_image(
 			r^,
@@ -300,6 +275,77 @@ init_renderer :: proc(r: ^Renderer) -> (err: Error) {
 			{.DEPTH_STENCIL_ATTACHMENT},
 		) or_return
 	}
+
+	// {
+	// 	model_data, _ := glTF2.load_from_file("bunny.glb")
+	// 	defer glTF2.unload(model_data)
+	// 	for mesh in model_data.meshes {
+	// 		for primitive in mesh.primitives {
+	// 			positions: [][3]f32
+	// 			indices: []u16
+	// 			{
+	// 				attr := primitive.attributes["POSITION"]
+	// 				accessor := model_data.accessors[attr]
+	// 				view := model_data.buffer_views[accessor.buffer_view.(glTF2.Integer)]
+	// 				buffer := model_data.buffers[view.buffer]
+	// 				raw_bytes: []byte
+	// 				if bytes, ok := buffer.uri.([]byte); ok {
+	// 					raw_bytes = bytes
+	// 				}
+	// 				offset := view.byte_offset + accessor.byte_offset
+	// 				positions = mem.slice_data_cast([][3]f32, raw_bytes[offset:])[:accessor.count]
+	// 				log.infof("there are %d positions", len(positions))
+	// 			}
+	// 			{
+	// 				accessor := model_data.accessors[primitive.indices.(glTF2.Integer)]
+	// 				view := model_data.buffer_views[accessor.buffer_view.(glTF2.Integer)]
+	// 				buffer := model_data.buffers[view.buffer]
+	// 				raw_bytes: []byte
+	// 				if bytes, ok := buffer.uri.([]byte); ok {
+	// 					raw_bytes = bytes
+	// 				}
+	// 				offset := view.byte_offset + accessor.byte_offset
+	// 				#partial switch accessor.component_type {
+	// 				case .Unsigned_Short:
+	// 					indices = mem.slice_data_cast([]u16, raw_bytes[offset:])[:accessor.count]
+	// 					log.infof("there are %d indices", len(indices))
+	// 				}
+	// 			}
+	// 			indices_32 := make([]u32, len(indices))
+	// 			for index, i in indices {
+	// 				indices_32[i] = u32(index)
+	// 			}
+
+	// 			max_meshlets := meshopt.meshopt_buildMeshletsBound(len(indices), 64, 64)
+	// 			meshlets := make([dynamic]meshopt.meshopt_Meshlet, uint(max_meshlets))
+	// 			meshlet_vertices := make([dynamic]u32, len(indices))
+	// 			meshlet_triangles := make([dynamic]u8, len(indices))
+	// 			meshopt.meshopt_buildMeshlets(
+	// 				raw_data(meshlets),
+	// 				&meshlet_vertices[0],
+	// 				&meshlet_triangles[0],
+	// 				raw_data(indices_32),
+	// 				len(indices),
+	// 				raw_data(mem.slice_data_cast([]f32, positions)),
+	// 				len(positions),
+	// 				size_of([3]f32),
+	// 				64,
+	// 				64,
+	// 				0.0,
+	// 			)
+	// 			shrink(&meshlets)
+	// 			log.info("done building ", len(meshlets), " meshlets")
+	// 			for meshlet in meshlets {
+	// 				meshopt.meshopt_optimizeMeshlet(
+	// 					&meshlet_vertices[meshlet.vertex_offset],
+	// 					&meshlet_triangles[meshlet.triangle_offset],
+	// 					uint(meshlet.triangle_count),
+	// 					uint(meshlet.vertex_count),
+	// 				)
+	// 			}
+	// 		}
+	// 	}
+	// }
 
 	return
 }
@@ -658,56 +704,6 @@ Vertex :: struct {
 	color: [3]f32,
 	uv:    [2]f32,
 }
-
-vertices :: []Vertex {
-	// Front Face (Z+)
-	{pos = {-0.5, -0.5, 0.5}, color = {1, 1, 1}, uv = {0, 1}},
-	{pos = {0.5, -0.5, 0.5}, color = {1, 1, 1}, uv = {1, 1}},
-	{pos = {0.5, 0.5, 0.5}, color = {1, 1, 1}, uv = {1, 0}},
-	{pos = {-0.5, 0.5, 0.5}, color = {1, 1, 1}, uv = {0, 0}},
-
-	// Back Face (Z-)
-	{pos = {0.5, -0.5, -0.5}, color = {1, 1, 1}, uv = {0, 1}},
-	{pos = {-0.5, -0.5, -0.5}, color = {1, 1, 1}, uv = {1, 1}},
-	{pos = {-0.5, 0.5, -0.5}, color = {1, 1, 1}, uv = {1, 0}},
-	{pos = {0.5, 0.5, -0.5}, color = {1, 1, 1}, uv = {0, 0}},
-
-	// Top Face (Y+)
-	{pos = {-0.5, 0.5, 0.5}, color = {1, 1, 1}, uv = {0, 1}},
-	{pos = {0.5, 0.5, 0.5}, color = {1, 1, 1}, uv = {1, 1}},
-	{pos = {0.5, 0.5, -0.5}, color = {1, 1, 1}, uv = {1, 0}},
-	{pos = {-0.5, 0.5, -0.5}, color = {1, 1, 1}, uv = {0, 0}},
-
-	// Bottom Face (Y-)
-	{pos = {-0.5, -0.5, -0.5}, color = {1, 1, 1}, uv = {0, 1}},
-	{pos = {0.5, -0.5, -0.5}, color = {1, 1, 1}, uv = {1, 1}},
-	{pos = {0.5, -0.5, 0.5}, color = {1, 1, 1}, uv = {1, 0}},
-	{pos = {-0.5, -0.5, 0.5}, color = {1, 1, 1}, uv = {0, 0}},
-
-	// Right Face (X+)
-	{pos = {0.5, -0.5, 0.5}, color = {1, 1, 1}, uv = {0, 1}},
-	{pos = {0.5, -0.5, -0.5}, color = {1, 1, 1}, uv = {1, 1}},
-	{pos = {0.5, 0.5, -0.5}, color = {1, 1, 1}, uv = {1, 0}},
-	{pos = {0.5, 0.5, 0.5}, color = {1, 1, 1}, uv = {0, 0}},
-
-	// Left Face (X-)
-	{pos = {-0.5, -0.5, -0.5}, color = {1, 1, 1}, uv = {0, 1}},
-	{pos = {-0.5, -0.5, 0.5}, color = {1, 1, 1}, uv = {1, 1}},
-	{pos = {-0.5, 0.5, 0.5}, color = {1, 1, 1}, uv = {1, 0}},
-	{pos = {-0.5, 0.5, -0.5}, color = {1, 1, 1}, uv = {0, 0}},
-}
-
-// odinfmt: disable
-indices :: []u32 {
-    0, 1, 2,  0, 2, 3,       // Front Face
-    4, 5, 6,  4, 6, 7,       // Back Face
-    8, 9, 10, 8, 10, 11,     // Top Face
-    12, 13, 14, 12, 14, 15,  // Bottom Face
-    16, 17, 18, 16, 18, 19,  // Right Face
-    20, 21, 22, 20, 22, 23,  // Left Face
-}
-// odinfmt: enable
-
 
 load_texture_from_file :: proc(r: ^Renderer, path: cstring) -> (image_id: Image_Id, err: Error) {
 	w, h, c: i32
