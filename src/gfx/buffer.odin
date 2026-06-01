@@ -46,7 +46,7 @@ create_buffer :: proc(
 			&buffer.info,
 		),
 	) or_return
-	
+
 	when ODIN_DEBUG {
 		c_str := strings.clone_to_cstring(name)
 		vma.set_allocation_name(r.allocator, buffer.allocation, c_str)
@@ -64,6 +64,17 @@ create_buffer :: proc(
 	handle = hm.add(&r.shader_resources.buffers, buffer)
 
 	return
+}
+
+write_to_buffer :: proc(
+	r: Renderer,
+	handle: Buffer_Id,
+	src: rawptr,
+	#any_int offset: vk.DeviceSize,
+	#any_int size: vk.DeviceSize,
+) {
+	buf := hm.get(r.shader_resources.buffers, handle)
+	vma.copy_memory_to_allocation(r.allocator, src, buf.allocation, offset, size)
 }
 
 destroy_buffer :: proc(r: ^Renderer, handle: Buffer_Id) {

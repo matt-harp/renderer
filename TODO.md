@@ -1,4 +1,9 @@
 - meshlet shaders
+	- 1. get proof of concept working with single huge buffer for simplicity 
+	- 2. split buffers
+		- vertices and indices: staging buffer to megabuffer
+		- 
+	- asset cooking step before runtime
 - UI rendering
 	- sdf rendering
 - GPU profiling

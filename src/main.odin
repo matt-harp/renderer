@@ -82,6 +82,36 @@ main :: proc() {
 		},
 	)
 
+	model, model_load_err := load_model_from_file("bunny.glb")
+	if !model_load_err {
+		log.errorf("couldn't load model")
+		return
+	}
+	prim := model.meshes[0].primitives[0]
+
+	instance_buffer, _ := gfx.create_buffer(renderer, matrix[4,4]f32, "model instances", 1, {.SHADER_DEVICE_ADDRESS, .UNIFORM_BUFFER}, {.Host_Access_Sequential_Write, .Mapped})
+	gfx.write_to_buffer(renderer, instance_buffer, &model.transform, 0, size_of(matrix[4,4]f32))
+
+	vertex_buffer, _ := gfx.create_buffer(renderer, gfx.Meshlet, "mesh vertices", len(prim.vertices), {.SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER}, {.Host_Access_Sequential_Write, .Mapped})
+	gfx.write_to_buffer(renderer, vertex_buffer, raw_data(prim.vertices), 0, size_of(Vertex) * len(prim.vertices))
+	
+	meshlet_metadata, _ := gfx.create_buffer(renderer, gfx.Meshlet, "meshlet metadata", len(prim.meshlets), {.SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER}, {.Host_Access_Sequential_Write, .Mapped})
+	gfx.write_to_buffer(renderer, meshlet_metadata, raw_data(prim.meshlets), 0, size_of(gfx.Meshlet) * len(prim.meshlets))
+
+	vertices_buffer, _ := gfx.create_buffer(renderer, u32, "meshlet vertices", len(prim.local_vertices), {.SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER}, {.Host_Access_Sequential_Write, .Mapped})
+	gfx.write_to_buffer(renderer, vertices_buffer, raw_data(prim.local_vertices), 0, size_of(u32) * len(prim.local_vertices))
+
+	index_buffer, _ := gfx.create_buffer(renderer, u8, "meshlet indices", len(prim.local_triangles), {.SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER}, {.Host_Access_Sequential_Write, .Mapped})
+	gfx.write_to_buffer(renderer, index_buffer, raw_data(prim.local_triangles), 0, size_of(u8) * len(prim.local_triangles))
+
+	renderer.mesh_vertex_buffer = vertex_buffer
+	renderer.meshlet_buffer = meshlet_metadata
+	renderer.meshlet_vertex_buffer = vertices_buffer
+	renderer.meshlet_index_buffer = index_buffer
+	renderer.meshlet_count = u32(len(prim.meshlets))
+
+	gfx.build_scene_data(&renderer)
+
 	last_time := glfw.GetTime()
 
 	for !glfw.WindowShouldClose(renderer.window) {
@@ -112,4 +142,7 @@ main :: proc() {
 			log.errorf("Failed to draw frame: %v", draw_err)
 			break
 		}
-	}}
+	}
+
+	unload_model(model)
+}

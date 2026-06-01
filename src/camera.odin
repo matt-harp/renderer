@@ -26,7 +26,7 @@ camera_init :: proc(
 	cam.fov = fov
 	cam.near = near
 	cam.far = far
-	cam.move_speed = 100.0
+	cam.move_speed = 10.0
 	cam.sensitivity = 0.2
 }
 

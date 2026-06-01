@@ -72,6 +72,12 @@ Renderer :: struct {
 
 	// gbuffer
 	depth_image:           Image_Id,
+	meshlet_count:         u32,
+	mesh_vertex_buffer:    Buffer_Id,
+	meshlet_buffer:        Buffer_Id,
+	meshlet_vertex_buffer: Buffer_Id,
+	meshlet_index_buffer:  Buffer_Id,
+	scene_data_buffer:     Buffer_Id,
 
 	// bindless
 	bindless_layout:       vk.DescriptorSetLayout,
@@ -79,9 +85,18 @@ Renderer :: struct {
 	bindless_set:          vk.DescriptorSet,
 }
 
+Scene_Data :: struct {
+	viewProj:      linalg.Matrix4f32,
+	mesh_vertex:   vk.DeviceAddress,
+	meshlets:      vk.DeviceAddress,
+	vertices:      vk.DeviceAddress,
+	indices:       vk.DeviceAddress,
+	meshlet_count: uint,
+}
+
 Push_Constants :: struct {
-	model:    linalg.Matrix4f32,
-	viewProj: linalg.Matrix4f32,
+	model_matrix: matrix[4,4]f32,
+	scene_data: vk.DeviceAddress,
 }
 
 init_renderer :: proc(r: ^Renderer) -> (err: Error) {
@@ -276,78 +291,15 @@ init_renderer :: proc(r: ^Renderer) -> (err: Error) {
 		) or_return
 	}
 
-	// {
-	// 	model_data, _ := glTF2.load_from_file("bunny.glb")
-	// 	defer glTF2.unload(model_data)
-	// 	for mesh in model_data.meshes {
-	// 		for primitive in mesh.primitives {
-	// 			positions: [][3]f32
-	// 			indices: []u16
-	// 			{
-	// 				attr := primitive.attributes["POSITION"]
-	// 				accessor := model_data.accessors[attr]
-	// 				view := model_data.buffer_views[accessor.buffer_view.(glTF2.Integer)]
-	// 				buffer := model_data.buffers[view.buffer]
-	// 				raw_bytes: []byte
-	// 				if bytes, ok := buffer.uri.([]byte); ok {
-	// 					raw_bytes = bytes
-	// 				}
-	// 				offset := view.byte_offset + accessor.byte_offset
-	// 				positions = mem.slice_data_cast([][3]f32, raw_bytes[offset:])[:accessor.count]
-	// 				log.infof("there are %d positions", len(positions))
-	// 			}
-	// 			{
-	// 				accessor := model_data.accessors[primitive.indices.(glTF2.Integer)]
-	// 				view := model_data.buffer_views[accessor.buffer_view.(glTF2.Integer)]
-	// 				buffer := model_data.buffers[view.buffer]
-	// 				raw_bytes: []byte
-	// 				if bytes, ok := buffer.uri.([]byte); ok {
-	// 					raw_bytes = bytes
-	// 				}
-	// 				offset := view.byte_offset + accessor.byte_offset
-	// 				#partial switch accessor.component_type {
-	// 				case .Unsigned_Short:
-	// 					indices = mem.slice_data_cast([]u16, raw_bytes[offset:])[:accessor.count]
-	// 					log.infof("there are %d indices", len(indices))
-	// 				}
-	// 			}
-	// 			indices_32 := make([]u32, len(indices))
-	// 			for index, i in indices {
-	// 				indices_32[i] = u32(index)
-	// 			}
-
-	// 			max_meshlets := meshopt.meshopt_buildMeshletsBound(len(indices), 64, 64)
-	// 			meshlets := make([dynamic]meshopt.meshopt_Meshlet, uint(max_meshlets))
-	// 			meshlet_vertices := make([dynamic]u32, len(indices))
-	// 			meshlet_triangles := make([dynamic]u8, len(indices))
-	// 			meshopt.meshopt_buildMeshlets(
-	// 				raw_data(meshlets),
-	// 				&meshlet_vertices[0],
-	// 				&meshlet_triangles[0],
-	// 				raw_data(indices_32),
-	// 				len(indices),
-	// 				raw_data(mem.slice_data_cast([]f32, positions)),
-	// 				len(positions),
-	// 				size_of([3]f32),
-	// 				64,
-	// 				64,
-	// 				0.0,
-	// 			)
-	// 			shrink(&meshlets)
-	// 			log.info("done building ", len(meshlets), " meshlets")
-	// 			for meshlet in meshlets {
-	// 				meshopt.meshopt_optimizeMeshlet(
-	// 					&meshlet_vertices[meshlet.vertex_offset],
-	// 					&meshlet_triangles[meshlet.triangle_offset],
-	// 					uint(meshlet.triangle_count),
-	// 					uint(meshlet.vertex_count),
-	// 				)
-	// 			}
-	// 		}
-	// 	}
-	// }
+	
 
 	return
+}
+
+build_scene_data :: proc(r: ^Renderer) {
+	scene_data_buf, _ := create_buffer(r^, Scene_Data, "scene data", 1, {.SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER}, {.Host_Access_Sequential_Write, .Mapped})
+	
+	r.scene_data_buffer = scene_data_buf
 }
 
 destroy_renderer :: proc(r: ^Renderer) {
@@ -542,6 +494,9 @@ record_command_buffer :: proc(
 	)
 
 	depth_image := hm.get(r.shader_resources.images, r.depth_image)
+	if depth_image == nil {
+		panic("depth image isn't valid")
+	}
 	transition_vk_image(
 		buffer,
 		depth_image.image,
@@ -607,13 +562,19 @@ record_command_buffer :: proc(
 
 	vk.CmdBindDescriptorSets(buffer, .GRAPHICS, r.pipeline_layout, 0, 1, &r.bindless_set, 0, nil)
 
-	meshopt.meshopt_buildMeshletsBound(30, 64, 64)
+	scene_data := Scene_Data {
+		viewProj    = projection * view,
+		meshlet_count = uint(r.meshlet_count),
+		mesh_vertex = hm.get(r.shader_resources.buffers, r.mesh_vertex_buffer).address.?,
+		meshlets    = hm.get(r.shader_resources.buffers, r.meshlet_buffer).address.?,
+		vertices    = hm.get(r.shader_resources.buffers, r.meshlet_vertex_buffer).address.?,
+		indices     = hm.get(r.shader_resources.buffers, r.meshlet_index_buffer).address.?,
+	}
+	write_to_buffer(r^, r.scene_data_buffer, &scene_data, 0, size_of(Scene_Data))
 
 	pc := Push_Constants {
-		// vertex_buffer_addr = hm.get(r.shader_resources.buffers, r.vertex_buffer).address.?,
-		// index_buffer_addr  = hm.get(r.shader_resources.buffers, r.index_buffer).address.?,
-		model                = model,
-		viewProj =  projection * view,
+		scene_data = hm.get(r.shader_resources.buffers, r.scene_data_buffer).address.?,
+		model_matrix = model,
 	}
 	vk.CmdPushConstants(
 		buffer,
@@ -627,7 +588,9 @@ record_command_buffer :: proc(
 	vk.CmdSetViewport(buffer, 0, 1, &viewport)
 	vk.CmdSetScissor(buffer, 0, 1, &scissor)
 
-	vk.CmdDrawMeshTasksEXT(buffer, 1, 1, 1)
+	wave_count := (r.meshlet_count + 31) / 32
+	log.infof("dispatching %d waves for %d meshlets", wave_count, r.meshlet_count)
+	vk.CmdDrawMeshTasksEXT(buffer, wave_count, 1, 1)
 
 	vk.CmdEndRendering(buffer)
 
@@ -798,9 +761,14 @@ draw_frame :: proc(r: ^Renderer) -> (err: Error) {
 		return recreate_swapchain(r, swap_conf)
 	} else if res != .SUCCESS && res != .SUBOPTIMAL_KHR {
 		log.errorf("Failed to acquire swap chain image: [%v]", res)
-		counts := vk.DeviceFaultCountsEXT{sType = .DEVICE_FAULT_COUNTS_EXT}
-		if res == .ERROR_DEVICE_LOST && vk.GetDeviceFaultInfoEXT(r.device.device, &counts, nil) == .SUCCESS {
-			info := vk.DeviceFaultInfoEXT{sType = .DEVICE_FAULT_INFO_EXT}
+		counts := vk.DeviceFaultCountsEXT {
+			sType = .DEVICE_FAULT_COUNTS_EXT,
+		}
+		if res == .ERROR_DEVICE_LOST &&
+		   vk.GetDeviceFaultInfoEXT(r.device.device, &counts, nil) == .SUCCESS {
+			info := vk.DeviceFaultInfoEXT {
+				sType = .DEVICE_FAULT_INFO_EXT,
+			}
 
 			address_infos := make([]vk.DeviceFaultAddressInfoEXT, counts.addressInfoCount)
 			vendor_infos := make([]vk.DeviceFaultVendorInfoEXT, counts.vendorInfoCount)
@@ -814,11 +782,23 @@ draw_frame :: proc(r: ^Renderer) -> (err: Error) {
 				log.errorf("Device Fault: %s", cstring(&info.description[0]))
 				for i in 0 ..< counts.addressInfoCount {
 					a := address_infos[i]
-					log.errorf("  Address Info [%d]: Type %v, Address 0x%x, Precision %v", i, a.addressType, a.reportedAddress, a.addressPrecision)
+					log.errorf(
+						"  Address Info [%d]: Type %v, Address 0x%x, Precision %v",
+						i,
+						a.addressType,
+						a.reportedAddress,
+						a.addressPrecision,
+					)
 				}
 				for i in 0 ..< counts.vendorInfoCount {
 					v := vendor_infos[i]
-					log.errorf("  Vendor Info [%d]: %s, Code: %v, Data: %v", i, cstring(&v.description[0]), v.vendorFaultCode, v.vendorFaultData)
+					log.errorf(
+						"  Vendor Info [%d]: %s, Code: %v, Data: %v",
+						i,
+						cstring(&v.description[0]),
+						v.vendorFaultCode,
+						v.vendorFaultData,
+					)
 				}
 			}
 		}
