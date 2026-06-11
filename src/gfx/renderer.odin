@@ -72,11 +72,13 @@ Renderer :: struct {
 
 	// gbuffer
 	depth_image:           Image_Id,
-	meshlet_count:         u32,
 	mesh_vertex_buffer:    Buffer_Id,
 	meshlet_buffer:        Buffer_Id,
+	meshlet_count:         u32,
 	meshlet_vertex_buffer: Buffer_Id,
 	meshlet_index_buffer:  Buffer_Id,
+	instance_buffer:       Buffer_Id,
+	instance_count:        u32,
 	scene_data_buffer:     Buffer_Id,
 
 	// bindless
@@ -85,18 +87,20 @@ Renderer :: struct {
 	bindless_set:          vk.DescriptorSet,
 }
 
-Scene_Data :: struct {
-	viewProj:      linalg.Matrix4f32,
-	mesh_vertex:   vk.DeviceAddress,
-	meshlets:      vk.DeviceAddress,
-	vertices:      vk.DeviceAddress,
-	indices:       vk.DeviceAddress,
-	meshlet_count: uint,
+Scene_Data :: struct #packed {
+	viewProj:       linalg.Matrix4f32,
+	mesh_vertex:    vk.DeviceAddress,
+	meshlets:       vk.DeviceAddress,
+	vertices:       vk.DeviceAddress,
+	indices:        vk.DeviceAddress,
+	instances:      vk.DeviceAddress,
+	meshlet_count:  u32,
+	instance_count: u32,
 }
 
 Push_Constants :: struct {
-	model_matrix: matrix[4,4]f32,
-	scene_data: vk.DeviceAddress,
+	model_matrix: matrix[4, 4]f32,
+	scene_data:   vk.DeviceAddress,
 }
 
 init_renderer :: proc(r: ^Renderer) -> (err: Error) {
@@ -291,14 +295,19 @@ init_renderer :: proc(r: ^Renderer) -> (err: Error) {
 		) or_return
 	}
 
-	
-
 	return
 }
 
 build_scene_data :: proc(r: ^Renderer) {
-	scene_data_buf, _ := create_buffer(r^, Scene_Data, "scene data", 1, {.SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER}, {.Host_Access_Sequential_Write, .Mapped})
-	
+	scene_data_buf, _ := create_buffer(
+		r^,
+		Scene_Data,
+		"scene data",
+		1,
+		{.SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER},
+		{.Host_Access_Sequential_Write, .Mapped},
+	)
+
 	r.scene_data_buffer = scene_data_buf
 }
 
@@ -563,17 +572,19 @@ record_command_buffer :: proc(
 	vk.CmdBindDescriptorSets(buffer, .GRAPHICS, r.pipeline_layout, 0, 1, &r.bindless_set, 0, nil)
 
 	scene_data := Scene_Data {
-		viewProj    = projection * view,
-		meshlet_count = uint(r.meshlet_count),
-		mesh_vertex = hm.get(r.shader_resources.buffers, r.mesh_vertex_buffer).address.?,
-		meshlets    = hm.get(r.shader_resources.buffers, r.meshlet_buffer).address.?,
-		vertices    = hm.get(r.shader_resources.buffers, r.meshlet_vertex_buffer).address.?,
-		indices     = hm.get(r.shader_resources.buffers, r.meshlet_index_buffer).address.?,
+		viewProj       = projection * view,
+		meshlet_count  = r.meshlet_count,
+		mesh_vertex    = hm.get(r.shader_resources.buffers, r.mesh_vertex_buffer).address.?,
+		meshlets       = hm.get(r.shader_resources.buffers, r.meshlet_buffer).address.?,
+		vertices       = hm.get(r.shader_resources.buffers, r.meshlet_vertex_buffer).address.?,
+		indices        = hm.get(r.shader_resources.buffers, r.meshlet_index_buffer).address.?,
+		instances      = hm.get(r.shader_resources.buffers, r.instance_buffer).address.?,
+		instance_count = r.instance_count,
 	}
 	write_to_buffer(r^, r.scene_data_buffer, &scene_data, 0, size_of(Scene_Data))
 
 	pc := Push_Constants {
-		scene_data = hm.get(r.shader_resources.buffers, r.scene_data_buffer).address.?,
+		scene_data   = hm.get(r.shader_resources.buffers, r.scene_data_buffer).address.?,
 		model_matrix = model,
 	}
 	vk.CmdPushConstants(
@@ -588,8 +599,7 @@ record_command_buffer :: proc(
 	vk.CmdSetViewport(buffer, 0, 1, &viewport)
 	vk.CmdSetScissor(buffer, 0, 1, &scissor)
 
-	wave_count := (r.meshlet_count + 31) / 32
-	log.infof("dispatching %d waves for %d meshlets", wave_count, r.meshlet_count)
+	wave_count := ((r.meshlet_count * r.instance_count) / 32) + 1
 	vk.CmdDrawMeshTasksEXT(buffer, wave_count, 1, 1)
 
 	vk.CmdEndRendering(buffer)

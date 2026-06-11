@@ -12,6 +12,14 @@ import "gfx"
 
 import glfw "vendor:glfw"
 
+Instance :: struct #align(16) {
+	model_matrix: matrix[4, 4]f32,
+	meshlet_offset: u32,
+	meshlet_count: u32,
+	_: [2]u32,
+	bounding_sphere: [4]f32, // Not used yet
+}
+
 // Mouse input state
 last_mouse_x: f64 = 0.0
 last_mouse_y: f64 = 0.0
@@ -89,12 +97,24 @@ main :: proc() {
 	}
 	prim := model.meshes[0].primitives[0]
 
-	instance_buffer, _ := gfx.create_buffer(renderer, matrix[4,4]f32, "model instances", 1, {.SHADER_DEVICE_ADDRESS, .UNIFORM_BUFFER}, {.Host_Access_Sequential_Write, .Mapped})
-	gfx.write_to_buffer(renderer, instance_buffer, &model.transform, 0, size_of(matrix[4,4]f32))
+	instances := make([]Instance, 16)
+	for i := 0; i < 16; i += 1 {
+		x := f32(i % 4) * 2.0 - 3.0
+		y := f32(i / 4) * 2.0 - 3.0
+
+		instances[i] = Instance {
+			model_matrix = linalg.matrix4_translate_f32({x, y, 0}) * linalg.matrix4_scale_f32({3.5, 3.5, 3.5}),
+			meshlet_offset = 0,
+			meshlet_count = u32(len(prim.meshlets)),
+		}
+	}
+
+	instance_buffer, _ := gfx.create_buffer(renderer, Instance, "model instances", 16, {.SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER}, {.Host_Access_Sequential_Write, .Mapped})
+	gfx.write_to_buffer(renderer, instance_buffer, raw_data(instances), 0, size_of(Instance) * len(instances))
 
 	vertex_buffer, _ := gfx.create_buffer(renderer, gfx.Meshlet, "mesh vertices", len(prim.vertices), {.SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER}, {.Host_Access_Sequential_Write, .Mapped})
 	gfx.write_to_buffer(renderer, vertex_buffer, raw_data(prim.vertices), 0, size_of(Vertex) * len(prim.vertices))
-	
+
 	meshlet_metadata, _ := gfx.create_buffer(renderer, gfx.Meshlet, "meshlet metadata", len(prim.meshlets), {.SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER}, {.Host_Access_Sequential_Write, .Mapped})
 	gfx.write_to_buffer(renderer, meshlet_metadata, raw_data(prim.meshlets), 0, size_of(gfx.Meshlet) * len(prim.meshlets))
 
@@ -109,6 +129,8 @@ main :: proc() {
 	renderer.meshlet_vertex_buffer = vertices_buffer
 	renderer.meshlet_index_buffer = index_buffer
 	renderer.meshlet_count = u32(len(prim.meshlets))
+	renderer.instance_buffer = instance_buffer
+	renderer.instance_count = u32(len(instances))
 
 	gfx.build_scene_data(&renderer)
 
@@ -133,7 +155,7 @@ main :: proc() {
 
 		proj := gfx.matrix4_perspective_f32(camera.fov * (math.PI / 180.0), aspect, camera.near, camera.far)
 
-		gfx.model = model
+		// gfx.model = model
 		gfx.view = view
 		gfx.projection = proj
 		gfx.camera_origin = camera.pos

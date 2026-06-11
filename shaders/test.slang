@@ -6,8 +6,19 @@ struct VertexOutput
 
 struct DummyPayLoad
 {
+    uint InstanceIndices[32];
     uint MeshletIndices[32];
 };
+
+struct Instance {
+	float4x4 model_matrix;
+	// offset in the global meshlet buffer
+	uint meshlet_offset;
+	uint meshlet_count;
+	uint2 padding;
+	float3 bounding_center;
+	float bounding_radius;
+}
 
 struct Meshlet {
     float4 bounding_sphere;
@@ -24,17 +35,17 @@ struct Vertex {
     float3 position;
 };
 
-// Reordered to avoid implicit 4-byte padding before pointers
 struct SceneData {
     float4x4 viewProj;
     Vertex* mesh_vertices;
     Meshlet* meshlets;
     uint* vertices;
     uint8_t* indices;
-    uint meshlet_count; 
+    Instance* instances;
+    uint meshlet_count;
+    uint instance_count;
 };
 
-// Reordered to avoid implicit 8-byte padding before the matrix
 struct PushConstant {
     float4x4 model;
     SceneData* scene;
@@ -49,16 +60,26 @@ groupshared DummyPayLoad sPayload;
 [numthreads(32, 1, 1)]
 void taskMain(uint gtid : SV_GroupThreadID, uint dtid : SV_DispatchThreadID, uint gid : SV_GroupID)
 {
-    sPayload.MeshletIndices[gtid] = dtid;
+	bool visible = false;
 
-    GroupMemoryBarrierWithGroupSync();
+	uint instanceIndex = dtid / pushConstant.scene.meshlet_count;
+	uint meshletIndex = dtid % pushConstant.scene.meshlet_count;
 
-    uint valid_groups = 0;
-    if (gid * 32 < pushConstant.scene->meshlet_count) {
-        valid_groups = min(32, pushConstant.scene->meshlet_count - gid * 32);
-    }
+	if (instanceIndex < pushConstant.scene.instance_count && meshletIndex < pushConstant.scene.meshlet_count) {
+		visible = true;
+	}
 
-    DispatchMesh(valid_groups, 1, 1, sPayload);
+	uint offset = WavePrefixCountBits(visible);
+	if (visible) {
+		sPayload.InstanceIndices[offset] = instanceIndex;
+		sPayload.MeshletIndices[offset] = meshletIndex;
+	}
+
+	GroupMemoryBarrierWithGroupSync();
+
+	uint visibleCount = WaveActiveCountBits(visible);
+
+    DispatchMesh(visibleCount, 1, 1, sPayload);
 }
 
 [shader("mesh")]
@@ -73,6 +94,7 @@ void meshMain(
     uint gtid : SV_GroupThreadID
 )
 {
+	Instance instance = pushConstant.scene.instances[payload.InstanceIndices[gid]];
     uint meshlet_index = payload.MeshletIndices[gid];
 
     Meshlet m = pushConstant.scene->meshlets[meshlet_index];
@@ -83,7 +105,7 @@ void meshMain(
         triangles[gtid] = uint3(pushConstant.scene->indices[start], pushConstant.scene->indices[start+1], pushConstant.scene->indices[start+2]);
     }
 
-    float4x4 mvp = mul(pushConstant.scene->viewProj, pushConstant.model);
+    float4x4 mvp = mul(pushConstant.scene->viewProj, instance.model_matrix);
     if (gtid < m.vertices_count) {
         uint vert_idx = pushConstant.scene->vertices[m.vertices_offset + gtid];
 
