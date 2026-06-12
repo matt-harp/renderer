@@ -4,7 +4,7 @@ import "core:strings"
 import vma "thirdparty:odin-vma"
 import vk "vendor:vulkan"
 
-import hm "handle_map"
+import hm "core:container/handle_map"
 import vkb "vkbootstrap"
 
 create_image :: proc(
@@ -226,7 +226,7 @@ transition_vk_image :: proc(
 }
 
 destroy_image :: proc(r: ^Renderer, handle: Image_Id) {
-	image := hm.get(r.shader_resources.images, handle)
+	image := hm.get(&r.shader_resources.images, handle)
 	destroy_image_unsafe(r, image)
 	hm.remove(&r.shader_resources.images, handle)
 }

@@ -4,7 +4,7 @@ import "core:strings"
 import vma "thirdparty:odin-vma"
 import vk "vendor:vulkan"
 
-import hm "handle_map"
+import hm "core:container/handle_map"
 import vkb "vkbootstrap"
 
 create_buffer :: proc(
@@ -73,12 +73,12 @@ write_to_buffer :: proc(
 	#any_int offset: vk.DeviceSize,
 	#any_int size: vk.DeviceSize,
 ) {
-	buf := hm.get(r.shader_resources.buffers, handle)
+	buf := hm.get(&r.shader_resources.buffers, handle)
 	vma.copy_memory_to_allocation(r.allocator, src, buf.allocation, offset, size)
 }
 
 destroy_buffer :: proc(r: ^Renderer, handle: Buffer_Id) {
-	buffer := hm.get(r.shader_resources.buffers, handle)
+	buffer := hm.get(&r.shader_resources.buffers, handle)
 	destroy_buffer_unsafe(r, buffer)
 	hm.remove(&r.shader_resources.buffers, handle)
 }

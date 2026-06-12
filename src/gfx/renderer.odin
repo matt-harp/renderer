@@ -8,7 +8,7 @@ import "vendor:stb/image"
 import glfw "vendor:glfw"
 import vk "vendor:vulkan"
 
-import hm "handle_map"
+import hm "core:container/handle_map"
 import meshopt "thirdparty:odin-meshoptimizer"
 import vma "thirdparty:odin-vma"
 import vkb "vkbootstrap"
@@ -264,7 +264,7 @@ init_renderer :: proc(r: ^Renderer) -> (err: Error) {
 	init_descriptors(r) or_return
 
 	tex_handle := load_texture_from_file(r, "textures/texture.jpg") or_return
-	tex := hm.get(r.shader_resources.images, tex_handle)
+	tex := hm.get(&r.shader_resources.images, tex_handle)
 
 	image_info := vk.DescriptorImageInfo {
 		imageView   = tex.image_view,
@@ -357,7 +357,6 @@ destroy_renderer :: proc(r: ^Renderer) {
 
 	destroy_glfw_window(r.window)
 
-	hm.delete(&r.shader_resources.buffers)
 	free(r.shader_resources)
 }
 
@@ -502,7 +501,7 @@ record_command_buffer :: proc(
 		.COLOR_ATTACHMENT_OPTIMAL,
 	)
 
-	depth_image := hm.get(r.shader_resources.images, r.depth_image)
+	depth_image := hm.get(&r.shader_resources.images, r.depth_image)
 	if depth_image == nil {
 		panic("depth image isn't valid")
 	}
@@ -574,17 +573,17 @@ record_command_buffer :: proc(
 	scene_data := Scene_Data {
 		viewProj       = projection * view,
 		meshlet_count  = r.meshlet_count,
-		mesh_vertex    = hm.get(r.shader_resources.buffers, r.mesh_vertex_buffer).address.?,
-		meshlets       = hm.get(r.shader_resources.buffers, r.meshlet_buffer).address.?,
-		vertices       = hm.get(r.shader_resources.buffers, r.meshlet_vertex_buffer).address.?,
-		indices        = hm.get(r.shader_resources.buffers, r.meshlet_index_buffer).address.?,
-		instances      = hm.get(r.shader_resources.buffers, r.instance_buffer).address.?,
+		mesh_vertex    = hm.get(&r.shader_resources.buffers, r.mesh_vertex_buffer).address.?,
+		meshlets       = hm.get(&r.shader_resources.buffers, r.meshlet_buffer).address.?,
+		vertices       = hm.get(&r.shader_resources.buffers, r.meshlet_vertex_buffer).address.?,
+		indices        = hm.get(&r.shader_resources.buffers, r.meshlet_index_buffer).address.?,
+		instances      = hm.get(&r.shader_resources.buffers, r.instance_buffer).address.?,
 		instance_count = r.instance_count,
 	}
 	write_to_buffer(r^, r.scene_data_buffer, &scene_data, 0, size_of(Scene_Data))
 
 	pc := Push_Constants {
-		scene_data   = hm.get(r.shader_resources.buffers, r.scene_data_buffer).address.?,
+		scene_data   = hm.get(&r.shader_resources.buffers, r.scene_data_buffer).address.?,
 		model_matrix = model,
 	}
 	vk.CmdPushConstants(
@@ -700,7 +699,7 @@ load_texture_from_file :: proc(r: ^Renderer, path: cstring) -> (image_id: Image_
 		{.Host_Access_Sequential_Write, .Mapped},
 	) or_return
 	defer destroy_buffer(r, staging)
-	stag_buf := hm.get(r.shader_resources.buffers, staging)
+	stag_buf := hm.get(&r.shader_resources.buffers, staging)
 	mem.copy(stag_buf.info.mapped_data, pixels, img_size)
 
 	// Create the GPU Image
@@ -711,7 +710,7 @@ load_texture_from_file :: proc(r: ^Renderer, path: cstring) -> (image_id: Image_
 		extent,
 		{.TRANSFER_DST, .SAMPLED},
 	) or_return
-	tex := hm.get(r.shader_resources.images, image_id)
+	tex := hm.get(&r.shader_resources.images, image_id)
 
 	// copy staging -> image
 	cb := begin_immediate_submit(r) or_return

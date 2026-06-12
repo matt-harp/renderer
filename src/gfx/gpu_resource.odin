@@ -1,12 +1,12 @@
 package gfx
 
-import hm "handle_map"
+import hm "core:container/handle_map"
 import vma "thirdparty:odin-vma"
 import vk "vendor:vulkan"
 
 import vkb "vkbootstrap"
 
-Buffer_Id :: distinct hm.Handle
+Buffer_Id :: distinct hm.Handle64
 
 GPUBuffer :: struct {
 	handle:     Buffer_Id,
@@ -17,7 +17,7 @@ GPUBuffer :: struct {
 	name:       string,
 }
 
-Image_Id :: distinct hm.Handle
+Image_Id :: distinct hm.Handle64
 
 GPUImage :: struct {
 	handle:         Image_Id,
@@ -35,8 +35,8 @@ GPUImage :: struct {
 
 
 GPU_Shader_Resource_Table :: struct {
-	buffers:  hm.Handle_Map(GPUBuffer, Buffer_Id, 1024),
-	images:   hm.Handle_Map(GPUImage, Image_Id, 1024),
+	buffers:  hm.Static_Handle_Map(1024, GPUBuffer, Buffer_Id),
+	images:   hm.Static_Handle_Map(1024, GPUImage, Image_Id),
 	samplers: [4]vk.Sampler,
 }
 
@@ -49,9 +49,9 @@ BUFFER_DEVICE_ADDRESS_BUFFER_BINDING :: 4
 init_descriptors :: proc(r: ^Renderer) -> (err: Error) {
 	pool_sizes := [?]vk.DescriptorPoolSize {
 		{type = .SAMPLER, descriptorCount = u32(len(r.shader_resources.samplers))},
-		{type = .SAMPLED_IMAGE, descriptorCount = u32(hm.max(r.shader_resources.images))},
-		{type = .STORAGE_BUFFER, descriptorCount = u32(hm.max(r.shader_resources.buffers))},
-		{type = .STORAGE_IMAGE, descriptorCount = u32(hm.max(r.shader_resources.images))},
+		{type = .SAMPLED_IMAGE, descriptorCount = u32(hm.cap(r.shader_resources.images))},
+		{type = .STORAGE_BUFFER, descriptorCount = u32(hm.cap(r.shader_resources.buffers))},
+		{type = .STORAGE_IMAGE, descriptorCount = u32(hm.cap(r.shader_resources.images))},
 	}
 
 	pool_info := vk.DescriptorPoolCreateInfo {
@@ -89,19 +89,19 @@ init_descriptors :: proc(r: ^Renderer) -> (err: Error) {
 		{
 			binding = SAMPLED_IMAGE_BINDING,
 			descriptorType = .SAMPLED_IMAGE,
-			descriptorCount = u32(hm.max(r.shader_resources.images)),
+			descriptorCount = u32(hm.cap(r.shader_resources.images)),
 			stageFlags = vk.ShaderStageFlags_ALL,
 		},
 		{
 			binding = STORAGE_BUFFER_BINDING,
 			descriptorType = .STORAGE_BUFFER,
-			descriptorCount = u32(hm.max(r.shader_resources.buffers)),
+			descriptorCount = u32(hm.cap(r.shader_resources.buffers)),
 			stageFlags = vk.ShaderStageFlags_ALL,
 		},
 		{
 			binding = STORAGE_IMAGE_BINDING,
 			descriptorType = .STORAGE_IMAGE,
-			descriptorCount = u32(hm.max(r.shader_resources.images)),
+			descriptorCount = u32(hm.cap(r.shader_resources.images)),
 			stageFlags = vk.ShaderStageFlags_ALL,
 		},
 	}
