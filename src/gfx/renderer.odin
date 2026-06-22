@@ -9,7 +9,6 @@ import glfw "vendor:glfw"
 import vk "vendor:vulkan"
 
 import hm "core:container/handle_map"
-import meshopt "thirdparty:odin-meshoptimizer"
 import vma "thirdparty:odin-vma"
 import vkb "vkbootstrap"
 
@@ -87,8 +86,14 @@ Renderer :: struct {
 	bindless_set:          vk.DescriptorSet,
 }
 
-Scene_Data :: struct #packed {
+Frustum_Plane :: struct {
+	normal: [3]f32,
+	d:      f32,
+}
+
+Scene_Data :: struct {
 	viewProj:       linalg.Matrix4f32,
+	frustum_planes: [6]Frustum_Plane,
 	mesh_vertex:    vk.DeviceAddress,
 	meshlets:       vk.DeviceAddress,
 	vertices:       vk.DeviceAddress,
@@ -96,6 +101,36 @@ Scene_Data :: struct #packed {
 	instances:      vk.DeviceAddress,
 	meshlet_count:  u32,
 	instance_count: u32,
+}
+
+extract_frustum_planes :: proc(vp: linalg.Matrix4f32) -> [6]Frustum_Plane {
+    planes: [6]Frustum_Plane
+
+    planes[0].normal = {vp[0, 0] + vp[3, 0], vp[0, 1] + vp[3, 1], vp[0, 2] + vp[3, 2]}
+    planes[0].d      =  vp[0, 3] + vp[3, 3]
+
+    planes[1].normal = {vp[3, 0] - vp[0, 0], vp[3, 1] - vp[0, 1], vp[3, 2] - vp[0, 2]}
+    planes[1].d      =  vp[3, 3] - vp[0, 3]
+
+    planes[2].normal = {vp[1, 0] + vp[3, 0], vp[1, 1] + vp[3, 1], vp[1, 2] + vp[3, 2]}
+    planes[2].d      =  vp[1, 3] + vp[3, 3]
+
+    planes[3].normal = {vp[3, 0] - vp[1, 0], vp[3, 1] - vp[1, 1], vp[3, 2] - vp[1, 2]}
+    planes[3].d      =  vp[3, 3] - vp[1, 3]
+
+    planes[4].normal = {vp[2, 0], vp[2, 1], vp[2, 2]}
+    planes[4].d      =  vp[2, 3]
+
+    planes[5].normal = {vp[3, 0] - vp[2, 0], vp[3, 1] - vp[2, 1], vp[3, 2] - vp[2, 2]}
+    planes[5].d      =  vp[3, 3] - vp[2, 3]
+
+    for i in 0 ..< 6 {
+        inv_len := 1.0 / linalg.length(planes[i].normal)
+        planes[i].normal *= inv_len
+        planes[i].d      *= inv_len
+    }
+
+    return planes
 }
 
 Push_Constants :: struct {
@@ -570,8 +605,10 @@ record_command_buffer :: proc(
 
 	vk.CmdBindDescriptorSets(buffer, .GRAPHICS, r.pipeline_layout, 0, 1, &r.bindless_set, 0, nil)
 
+	vp := projection * view
 	scene_data := Scene_Data {
-		viewProj       = projection * view,
+		viewProj       = vp,
+		frustum_planes = extract_frustum_planes(vp),
 		meshlet_count  = r.meshlet_count,
 		mesh_vertex    = hm.get(&r.shader_resources.buffers, r.mesh_vertex_buffer).address.?,
 		meshlets       = hm.get(&r.shader_resources.buffers, r.meshlet_buffer).address.?,

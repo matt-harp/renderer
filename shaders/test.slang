@@ -1,3 +1,5 @@
+#define GROUP_SIZE 32
+
 struct VertexOutput
 {
   float4 position : SV_Position;
@@ -6,8 +8,8 @@ struct VertexOutput
 
 struct DummyPayLoad
 {
-    uint InstanceIndices[32];
-    uint MeshletIndices[32];
+    uint InstanceIndices[GROUP_SIZE];
+    uint MeshletIndices[GROUP_SIZE];
 };
 
 struct Instance {
@@ -35,8 +37,14 @@ struct Vertex {
     float3 position;
 };
 
+struct FrustumPlane {
+	float3 normal;
+	float d;
+}
+
 struct SceneData {
     float4x4 viewProj;
+    FrustumPlane frustum_planes[6];
     Vertex* mesh_vertices;
     Meshlet* meshlets;
     uint* vertices;
@@ -56,8 +64,25 @@ PushConstant pushConstant;
 
 groupshared DummyPayLoad sPayload;
 
+bool FrustumVisibilityPlanes(float4x4 model_matrix, float4 bounding_sphere) {
+	float3 center = mul(model_matrix, float4(bounding_sphere.xyz, 1.0)).xyz;
+
+	float scale = max(max(length(model_matrix[0].xyz), length(model_matrix[1].xyz)), length(model_matrix[2].xyz));
+	
+	[unroll]
+	for(int i = 0; i < 6; i++) {
+		FrustumPlane plane = pushConstant.scene.frustum_planes[i];
+		float d = dot(plane.normal, center) + plane.d;
+		if (d < -bounding_sphere.w * scale) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
 [shader("task")]
-[numthreads(32, 1, 1)]
+[numthreads(GROUP_SIZE, 1, 1)]
 void taskMain(uint gtid : SV_GroupThreadID, uint dtid : SV_DispatchThreadID, uint gid : SV_GroupID)
 {
 	bool visible = false;
@@ -66,7 +91,9 @@ void taskMain(uint gtid : SV_GroupThreadID, uint dtid : SV_DispatchThreadID, uin
 	uint meshletIndex = dtid % pushConstant.scene.meshlet_count;
 
 	if (instanceIndex < pushConstant.scene.instance_count && meshletIndex < pushConstant.scene.meshlet_count) {
-		visible = true;
+		Meshlet meshlet = pushConstant.scene.meshlets[meshletIndex];
+		Instance instance = pushConstant.scene.instances[instanceIndex];
+		visible = FrustumVisibilityPlanes(instance.model_matrix, meshlet.bounding_sphere);
 	}
 
 	uint offset = WavePrefixCountBits(visible);

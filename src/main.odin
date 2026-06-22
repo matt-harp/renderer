@@ -1,22 +1,22 @@
 package main
 
+import "base:runtime"
 import "core:c"
 import "core:fmt"
 import "core:log"
 import "core:math"
 import "core:math/linalg"
 import "core:mem"
-import "base:runtime"
 
 import "gfx"
 
 import glfw "vendor:glfw"
 
-Instance :: struct #align(16) {
-	model_matrix: matrix[4, 4]f32,
-	meshlet_offset: u32,
-	meshlet_count: u32,
-	_: [2]u32,
+Instance :: struct #align (16) {
+	model_matrix:    matrix[4, 4]f32,
+	meshlet_offset:  u32,
+	meshlet_count:   u32,
+	_:               [2]u32,
 	bounding_sphere: [4]f32, // Not used yet
 }
 
@@ -90,7 +90,7 @@ main :: proc() {
 		},
 	)
 
-	model, model_load_err := load_model_from_file("bunny.glb")
+	model, model_load_err := load_model_from_file("boulder_01.glb")
 	if !model_load_err {
 		log.errorf("couldn't load model")
 		return
@@ -103,26 +103,93 @@ main :: proc() {
 		y := f32(i / 4) * 2.0 - 3.0
 
 		instances[i] = Instance {
-			model_matrix = linalg.matrix4_translate_f32({x, y, 0}) * linalg.matrix4_scale_f32({3.5, 3.5, 3.5}),
+			model_matrix   = linalg.matrix4_translate_f32(
+				{x, y, 0},
+			) * linalg.matrix4_scale_f32({3.0, 3.0, 3.0}),
 			meshlet_offset = 0,
-			meshlet_count = u32(len(prim.meshlets)),
+			meshlet_count  = u32(len(prim.meshlets)),
 		}
 	}
 
-	instance_buffer, _ := gfx.create_buffer(renderer, Instance, "model instances", 16, {.SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER}, {.Host_Access_Sequential_Write, .Mapped})
-	gfx.write_to_buffer(renderer, instance_buffer, raw_data(instances), 0, size_of(Instance) * len(instances))
+	instance_buffer, _ := gfx.create_buffer(
+		renderer,
+		Instance,
+		"model instances",
+		16,
+		{.SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER},
+		{.Host_Access_Sequential_Write, .Mapped},
+	)
+	gfx.write_to_buffer(
+		renderer,
+		instance_buffer,
+		raw_data(instances),
+		0,
+		size_of(Instance) * len(instances),
+	)
 
-	vertex_buffer, _ := gfx.create_buffer(renderer, gfx.Meshlet, "mesh vertices", len(prim.vertices), {.SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER}, {.Host_Access_Sequential_Write, .Mapped})
-	gfx.write_to_buffer(renderer, vertex_buffer, raw_data(prim.vertices), 0, size_of(Vertex) * len(prim.vertices))
+	vertex_buffer, _ := gfx.create_buffer(
+		renderer,
+		gfx.Meshlet,
+		"mesh vertices",
+		len(prim.vertices),
+		{.SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER},
+		{.Host_Access_Sequential_Write, .Mapped},
+	)
+	gfx.write_to_buffer(
+		renderer,
+		vertex_buffer,
+		raw_data(prim.vertices),
+		0,
+		size_of(Vertex) * len(prim.vertices),
+	)
 
-	meshlet_metadata, _ := gfx.create_buffer(renderer, gfx.Meshlet, "meshlet metadata", len(prim.meshlets), {.SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER}, {.Host_Access_Sequential_Write, .Mapped})
-	gfx.write_to_buffer(renderer, meshlet_metadata, raw_data(prim.meshlets), 0, size_of(gfx.Meshlet) * len(prim.meshlets))
+	meshlet_metadata, _ := gfx.create_buffer(
+		renderer,
+		gfx.Meshlet,
+		"meshlet metadata",
+		len(prim.meshlets),
+		{.SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER},
+		{.Host_Access_Sequential_Write, .Mapped},
+	)
+	gfx.write_to_buffer(
+		renderer,
+		meshlet_metadata,
+		raw_data(prim.meshlets),
+		0,
+		size_of(gfx.Meshlet) * len(prim.meshlets),
+	)
 
-	vertices_buffer, _ := gfx.create_buffer(renderer, u32, "meshlet vertices", len(prim.local_vertices), {.SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER}, {.Host_Access_Sequential_Write, .Mapped})
-	gfx.write_to_buffer(renderer, vertices_buffer, raw_data(prim.local_vertices), 0, size_of(u32) * len(prim.local_vertices))
+	vertices_buffer, _ := gfx.create_buffer(
+		renderer,
+		u32,
+		"meshlet vertices",
+		len(prim.local_vertices),
+		{.SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER},
+		{.Host_Access_Sequential_Write, .Mapped},
+	)
+	gfx.write_to_buffer(
+		renderer,
+		vertices_buffer,
+		raw_data(prim.local_vertices),
+		0,
+		size_of(u32) * len(prim.local_vertices),
+	)
 
-	index_buffer, _ := gfx.create_buffer(renderer, u8, "meshlet indices", len(prim.local_triangles), {.SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER}, {.Host_Access_Sequential_Write, .Mapped})
-	gfx.write_to_buffer(renderer, index_buffer, raw_data(prim.local_triangles), 0, size_of(u8) * len(prim.local_triangles))
+	index_buffer, _ := gfx.create_buffer(
+		renderer,
+		u8,
+		"meshlet indices",
+		len(prim.local_triangles),
+		{.SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER},
+		{.Host_Access_Sequential_Write, .Mapped},
+	)
+	gfx.write_to_buffer(
+		renderer,
+		index_buffer,
+		raw_data(prim.local_triangles),
+		0,
+		size_of(u8) * len(prim.local_triangles),
+	)
 
 	renderer.mesh_vertex_buffer = vertex_buffer
 	renderer.meshlet_buffer = meshlet_metadata
@@ -147,13 +214,14 @@ main :: proc() {
 
 		view := camera_get_view_matrix(&camera)
 
-		model :=
-			// linalg.matrix4_rotate_f32(f32(time) * 0.5, {0, 1, 0}) *
-			linalg.matrix4_scale_f32({1, 1, 1})
-
 		aspect := f32(width) / f32(height)
 
-		proj := gfx.matrix4_perspective_f32(camera.fov * (math.PI / 180.0), aspect, camera.near, camera.far)
+		proj := gfx.matrix4_perspective_f32(
+			camera.fov * (math.PI / 180.0),
+			aspect,
+			camera.near,
+			camera.far,
+		)
 
 		// gfx.model = model
 		gfx.view = view

@@ -68,6 +68,7 @@ init_device :: proc(r: ^Renderer) -> (err: Error) {
 		vertexPipelineStoresAndAtomics = true,
 		shaderInt64                    = true,
 		samplerAnisotropy              = true,
+		shaderInt16                    = true,
 	}
 	vkb.physical_device_selector_set_required_features(selector, vk10)
 
@@ -84,14 +85,21 @@ init_device :: proc(r: ^Renderer) -> (err: Error) {
 	}
 
 	mesh_features := vk.PhysicalDeviceMeshShaderFeaturesEXT {
-		sType = .PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT,
+		sType      = .PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT,
 		taskShader = true,
 		meshShader = true,
 	}
 	ext_features := []vk.PhysicalDeviceMeshShaderFeaturesEXT{mesh_features}
-	vkb.physical_device_enable_extensions_with_features(vkb_physical_device, {vk.EXT_MESH_SHADER_EXTENSION_NAME}, ext_features)
+	vkb.physical_device_enable_extensions_with_features(
+		vkb_physical_device,
+		{vk.EXT_MESH_SHADER_EXTENSION_NAME},
+		ext_features,
+	)
 
-	if vkb.physical_device_enable_extension_if_present(vkb_physical_device, vk.EXT_DEVICE_FAULT_EXTENSION_NAME) {
+	if vkb.physical_device_enable_extension_if_present(
+		vkb_physical_device,
+		vk.EXT_DEVICE_FAULT_EXTENSION_NAME,
+	) {
 		log.infof("Enabled VK_EXT_device_fault")
 	}
 
@@ -101,8 +109,10 @@ init_device :: proc(r: ^Renderer) -> (err: Error) {
 
 	// vulkan 1.1 features
 	vk11 := vk.PhysicalDeviceVulkan11Features {
-		sType                = .PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
-		shaderDrawParameters = true,
+		sType                    = .PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+		shaderDrawParameters     = true,
+		storageBuffer16BitAccess = true,
+		storagePushConstant16    = true,
 	}
 	vkb.device_builder_add_pnext(device_builder, &vk11)
 
@@ -111,10 +121,8 @@ init_device :: proc(r: ^Renderer) -> (err: Error) {
 		sType                                         = .PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
 		bufferDeviceAddress                           = true,
 		scalarBlockLayout                             = true,
-		descriptorIndexing                           = true,
-		// shaderSampledImageArrayNonUniformIndexing    = true,
+		descriptorIndexing                            = true,
 		runtimeDescriptorArray                        = true,
-		// descriptorBindingVariableDescriptorCount     = true,
 		descriptorBindingPartiallyBound               = true,
 		descriptorBindingStorageBufferUpdateAfterBind = true,
 		descriptorBindingStorageImageUpdateAfterBind  = true,
@@ -123,6 +131,8 @@ init_device :: proc(r: ^Renderer) -> (err: Error) {
 		vulkanMemoryModel                             = true,
 		vulkanMemoryModelDeviceScope                  = true,
 		storageBuffer8BitAccess                       = true,
+		shaderInt8                                    = true,
+		storagePushConstant8                          = true,
 	}
 	vkb.device_builder_add_pnext(device_builder, &vk12)
 

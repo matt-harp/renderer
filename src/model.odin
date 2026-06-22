@@ -11,8 +11,8 @@ MAX_TRIANGLES_PER_MESHLET :: 124
 CONE_WEIGHT :: 0.0
 
 Model :: struct {
-	meshes: []Mesh,
-	transform: matrix[4,4]f32,
+	meshes:    []Mesh,
+	transform: matrix[4, 4]f32,
 }
 
 Mesh :: struct {
@@ -45,9 +45,9 @@ load_model_from_file :: proc(src: string) -> (model: Model, err: bool) {
 
 		for gl_primitive, prim_idx in gl_mesh.primitives {
 			primitive: Primitive
-			primitive_positions: [][3]f32
 
 			// Extract Positions
+			primitive_positions: [][3]f32
 			{
 				attr := gl_primitive.attributes["POSITION"]
 				accessor := model_data.accessors[attr]
@@ -63,9 +63,10 @@ load_model_from_file :: proc(src: string) -> (model: Model, err: bool) {
 					raw_bytes[offset:],
 				)[:accessor.count]
 			}
+			vertex_count: uint = len(primitive_positions)
 
 			// Extract Indices
-			primitive_indices: []u16
+			primitive_indices: []u32
 			{
 				accessor := model_data.accessors[gl_primitive.indices.(glTF2.Integer)]
 				view := model_data.buffer_views[accessor.buffer_view.(glTF2.Integer)]
@@ -75,12 +76,24 @@ load_model_from_file :: proc(src: string) -> (model: Model, err: bool) {
 					raw_bytes = bytes
 				}
 				offset := view.byte_offset + accessor.byte_offset
+
+				primitive_indices = make([]u32, accessor.count)
 				#partial switch accessor.component_type {
+				case .Unsigned_Byte:
+					src := mem.slice_data_cast([]u8, raw_bytes[offset:])[:accessor.count]
+					for v, i in src {
+						primitive_indices[i] = u32(v)
+					}
 				case .Unsigned_Short:
-					primitive_indices = mem.slice_data_cast(
-						[]u16,
-						raw_bytes[offset:],
-					)[:accessor.count]
+					src := mem.slice_data_cast([]u16, raw_bytes[offset:])[:accessor.count]
+					for v, i in src {
+						primitive_indices[i] = u32(v)
+					}
+				case .Unsigned_Int:
+					src := mem.slice_data_cast([]u32, raw_bytes[offset:])[:accessor.count]
+					for v, i in src {
+						primitive_indices[i] = u32(v)
+					}
 				}
 			}
 
@@ -92,12 +105,7 @@ load_model_from_file :: proc(src: string) -> (model: Model, err: bool) {
 				}
 			}
 
-			positions_32 := mem.slice_data_cast([]f32, primitive_positions)
-			indices_32 := make([]u32, len(primitive_indices))
-			defer delete(indices_32)
-			for index, i in primitive_indices {
-				indices_32[i] = u32(index)
-			}
+			primitive_positions_flat := mem.slice_data_cast([]f32, primitive_positions)
 
 			max_meshlets := meshopt.meshopt_buildMeshletsBound(
 				len(primitive_indices),
@@ -111,13 +119,13 @@ load_model_from_file :: proc(src: string) -> (model: Model, err: bool) {
 			meshlet_triangles := make([dynamic]u8, max_meshlets * MAX_TRIANGLES_PER_MESHLET * 3)
 
 			built_meshlets := meshopt.meshopt_buildMeshlets(
-				raw_data(meshlets),
-				raw_data(meshlet_vertices),
-				raw_data(meshlet_triangles),
-				raw_data(indices_32),
-				len(indices_32),
-				raw_data(positions_32),
-				len(primitive_positions),
+				&meshlets[0],
+				&meshlet_vertices[0],
+				&meshlet_triangles[0],
+				&primitive_indices[0],
+				len(primitive_indices),
+				raw_data(primitive_positions_flat),
+				vertex_count,
 				size_of([3]f32),
 				MAX_VERTICES_PER_MESHLET,
 				MAX_TRIANGLES_PER_MESHLET,
@@ -147,9 +155,9 @@ load_model_from_file :: proc(src: string) -> (model: Model, err: bool) {
 					&meshlet_vertices[meshlet.vertex_offset],
 					&meshlet_triangles[meshlet.triangle_offset],
 					uint(meshlet.triangle_count),
-					raw_data(positions_32),
-					len(positions_32),
-					size_of(Vertex),
+					&primitive_positions_flat[0],
+					vertex_count,
+					size_of([3]f32),
 				)
 				primitive.meshlets[i] = gfx.Meshlet {
 					bounding_sphere = {
