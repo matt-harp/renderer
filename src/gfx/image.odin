@@ -20,8 +20,8 @@ create_image :: proc(
 	tiling: vk.ImageTiling = .OPTIMAL,
 	flags: vk.ImageCreateFlags = {},
 	sharing_mode: vk.SharingMode = .EXCLUSIVE,
-	alloc_flags: vma.Allocation_Create_Flags = {},
-	alloc_usage: vma.Memory_Usage = .Gpu_Only,
+	alloc_flags: vma.AllocationCreateFlags = {},
+	alloc_usage: vma.MemoryUsage = .GPU_ONLY,
 	debug_name: cstring = nil,
 	loc := #caller_location,
 ) -> (
@@ -53,13 +53,13 @@ create_image :: proc(
 		sharingMode = sharing_mode,
 	}
 
-	alloc_create_info := vma.Allocation_Create_Info {
+	alloc_create_info := vma.AllocationCreateInfo {
 		usage = alloc_usage,
 		flags = alloc_flags,
 	}
 
 	vkb.vk_check(
-		vma.create_image(
+		vma.CreateImage(
 			r.allocator,
 			img_create_info,
 			alloc_create_info,
@@ -71,7 +71,7 @@ create_image :: proc(
 	
 	when ODIN_DEBUG {
 		c_str := strings.clone_to_cstring(name)
-		vma.set_allocation_name(r.allocator, image.allocation, c_str)
+		vma.SetAllocationName(r.allocator, image.allocation, c_str)
 		delete(c_str)
 	}
 
@@ -133,7 +133,7 @@ create_image_view :: proc(
 		subresourceRange = sub_range,
 	}
 
-	vkb.vk_check(vk.CreateImageView(r.device.device, &view_create_info, nil, &view)) or_return
+	vkb.vk_check(vk.CreateImageView(r.device.vk_device, &view_create_info, nil, &view)) or_return
 
 	return
 }
@@ -170,7 +170,7 @@ create_sampler :: proc(
 		maxLod                  = 0,
 	}
 
-	vkb.vk_check(vk.CreateSampler(r.device.device, &sampler_create_info, nil, &sampler)) or_return
+	vkb.vk_check(vk.CreateSampler(r.device.vk_device, &sampler_create_info, nil, &sampler)) or_return
 
 	return
 }
@@ -233,6 +233,6 @@ destroy_image :: proc(r: ^Renderer, handle: Image_Id) {
 
 destroy_image_unsafe :: proc(r: ^Renderer, image: ^GPUImage) {
 	// log.debugf("destroying image %#v", image)
-	vma.destroy_image(r.allocator, image.image, image.allocation)
-	vk.DestroyImageView(r.device.device, image.image_view, nil)
+	vma.DestroyImage(r.allocator, image.image, image.allocation)
+	vk.DestroyImageView(r.device.vk_device, image.image_view, nil)
 }

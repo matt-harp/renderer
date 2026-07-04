@@ -31,14 +31,16 @@ create_shader_module :: proc(r: ^Renderer, code: []u8) -> (module: vk.ShaderModu
 		pCode    = cast(^u32)raw_data(code),
 	}
 
-	vkb.vk_check(vk.CreateShaderModule(r.device.device, &vertex_module_info, nil, &module)) or_return
+	vkb.vk_check(
+		vk.CreateShaderModule(r.device.vk_device, &vertex_module_info, nil, &module),
+	) or_return
 
 	return
 }
 
 create_graphics_pipeline :: proc(r: ^Renderer) -> (err: Error) {
 	module := load_shader_module(r, "shaders/slang.spv") or_return
-	defer vk.DestroyShaderModule(r.device.device, module, nil)
+	defer vk.DestroyShaderModule(r.device.vk_device, module, nil)
 
 	// Dynamic state
 	dynamic_states := [?]vk.DynamicState{.VIEWPORT, .SCISSOR}
@@ -68,15 +70,15 @@ create_graphics_pipeline :: proc(r: ^Renderer) -> (err: Error) {
 	viewport := vk.Viewport {
 		x        = 0.0,
 		y        = 0.0,
-		width    = cast(f32)r.swapchain.extent.width,
-		height   = cast(f32)r.swapchain.extent.height,
+		width    = cast(f32)r.swapchain.vk_extent.width,
+		height   = cast(f32)r.swapchain.vk_extent.height,
 		minDepth = 0.0,
 		maxDepth = 1.0,
 	}
 
 	scissor := vk.Rect2D {
 		offset = {0, 0},
-		extent = r.swapchain.extent,
+		extent = r.swapchain.vk_extent,
 	}
 
 	viewport_state := vk.PipelineViewportStateCreateInfo {
@@ -154,7 +156,7 @@ create_graphics_pipeline :: proc(r: ^Renderer) -> (err: Error) {
 	}
 
 	if res := vk.CreatePipelineLayout(
-		r.device.device,
+		r.device.vk_device,
 		&pipeline_layout_info,
 		nil,
 		&r.pipeline_layout,
@@ -163,7 +165,7 @@ create_graphics_pipeline :: proc(r: ^Renderer) -> (err: Error) {
 		return
 	}
 
-	color_format := r.swapchain.image_format
+	color_format := r.swapchain.vk_image_format
 	pipeline_rendering_info := vk.PipelineRenderingCreateInfo {
 		sType                   = .PIPELINE_RENDERING_CREATE_INFO,
 		colorAttachmentCount    = 1,
@@ -193,7 +195,11 @@ create_graphics_pipeline :: proc(r: ^Renderer) -> (err: Error) {
 		pName  = "fragmentMain",
 	}
 
-	shader_stages := [?]vk.PipelineShaderStageCreateInfo{task_stage_info, mesh_stage_info, fragment_stage_info}
+	shader_stages := [?]vk.PipelineShaderStageCreateInfo {
+		task_stage_info,
+		mesh_stage_info,
+		fragment_stage_info,
+	}
 
 	// pipeline finally
 	pipeline_info := vk.GraphicsPipelineCreateInfo {
@@ -212,14 +218,17 @@ create_graphics_pipeline :: proc(r: ^Renderer) -> (err: Error) {
 		layout              = r.pipeline_layout,
 	}
 
-	vkb.vk_check(vk.CreateGraphicsPipelines(
-		r.device.device,
-		0,
-		1,
-		&pipeline_info,
-		nil,
-		&r.graphics_pipeline,
-	)) or_return
+	vkb.vk_check(
+		vk.CreateGraphicsPipelines(
+			r.device.vk_device,
+			0,
+			1,
+			&pipeline_info,
+			nil,
+			&r.graphics_pipeline,
+		),
+	) or_return
 
 	return
 }
+

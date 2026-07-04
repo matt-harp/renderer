@@ -51,3 +51,4 @@ destroy_glfw_window :: proc(window: glfw.WindowHandle) {
 	glfw.DestroyWindow(window)
 	glfw.Terminate()
 }
+

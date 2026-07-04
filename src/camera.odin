@@ -99,3 +99,4 @@ camera_handle_mouse :: proc(cam: ^Camera, dx, dy: f32) {
 	// Constrain pitch to avoid flipping over the poles
 	cam.pitch = linalg.clamp(cam.pitch, -89.0, 89.0)
 }
+

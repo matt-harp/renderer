@@ -25,6 +25,9 @@ last_mouse_x: f64 = 0.0
 last_mouse_y: f64 = 0.0
 mouse_held: bool = false
 
+// Frustum freeze toggle
+prev_f5_down: bool = false
+
 camera: Camera
 
 main :: proc() {
@@ -117,7 +120,7 @@ main :: proc() {
 		"model instances",
 		16,
 		{.SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER},
-		{.Host_Access_Sequential_Write, .Mapped},
+		{.HOST_ACCESS_SEQUENTIAL_WRITE, .MAPPED},
 	)
 	gfx.write_to_buffer(
 		renderer,
@@ -133,7 +136,7 @@ main :: proc() {
 		"mesh vertices",
 		len(prim.vertices),
 		{.SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER},
-		{.Host_Access_Sequential_Write, .Mapped},
+		{.HOST_ACCESS_SEQUENTIAL_WRITE, .MAPPED},
 	)
 	gfx.write_to_buffer(
 		renderer,
@@ -149,7 +152,7 @@ main :: proc() {
 		"meshlet metadata",
 		len(prim.meshlets),
 		{.SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER},
-		{.Host_Access_Sequential_Write, .Mapped},
+		{.HOST_ACCESS_SEQUENTIAL_WRITE, .MAPPED},
 	)
 	gfx.write_to_buffer(
 		renderer,
@@ -165,7 +168,7 @@ main :: proc() {
 		"meshlet vertices",
 		len(prim.local_vertices),
 		{.SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER},
-		{.Host_Access_Sequential_Write, .Mapped},
+		{.HOST_ACCESS_SEQUENTIAL_WRITE, .MAPPED},
 	)
 	gfx.write_to_buffer(
 		renderer,
@@ -181,7 +184,7 @@ main :: proc() {
 		"meshlet indices",
 		len(prim.local_triangles),
 		{.SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER},
-		{.Host_Access_Sequential_Write, .Mapped},
+		{.HOST_ACCESS_SEQUENTIAL_WRITE, .MAPPED},
 	)
 	gfx.write_to_buffer(
 		renderer,
@@ -211,6 +214,26 @@ main :: proc() {
 		last_time = time
 
 		camera_update(&camera, renderer.window, delta_time)
+
+		f5_down := glfw.GetKey(renderer.window, glfw.KEY_F5) == glfw.PRESS
+		if f5_down && !prev_f5_down {
+			renderer.frustum_frozen = !renderer.frustum_frozen
+			if renderer.frustum_frozen {
+				view_tmp := camera_get_view_matrix(&camera)
+				aspect := f32(width) / f32(height)
+				proj_tmp := gfx.matrix4_perspective_f32(
+					camera.fov * (math.PI / 180.0),
+					aspect,
+					camera.near,
+					camera.far,
+				)
+				renderer.saved_frustum_planes = gfx.extract_frustum_planes(proj_tmp * view_tmp)
+				log.infof("Frustum planes frozen")
+			} else {
+				log.infof("Frustum planes unfrozen")
+			}
+		}
+		prev_f5_down = f5_down
 
 		view := camera_get_view_matrix(&camera)
 

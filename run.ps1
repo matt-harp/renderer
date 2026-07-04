@@ -5,6 +5,7 @@ slangc shaders/test.slang `
 	-entry taskMain `
 	-entry meshMain `
 	-entry fragmentMain `
-	-o shaders/slang.spv
+	-o shaders/slang.spv `
+	-g3
 
 odin build src -debug -out:build/engine.exe -collection:thirdparty=./thirdparty && ./build/engine.exe

@@ -1,3 +1,9 @@
 [submodule "thirdparty/odin-vma"]
 	path = thirdparty/odin-vma
 	url = git@github.com:Capati/odin-vma.git
+[submodule "thirdparty/glTF2"]
+	path = thirdparty/glTF2
+	url = git@github.com:Pawel82S/glTF2
+[submodule "thirdparty/odin-meshoptimizer"]
+	path = thirdparty/odin-meshoptimizer
+	url = git@github.com:matt-harp/odin-meshoptimizer

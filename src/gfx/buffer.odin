@@ -13,7 +13,7 @@ create_buffer :: proc(
 	name: string,
 	#any_int size: vk.DeviceSize = 1,
 	vk_usage: vk.BufferUsageFlags,
-	vma_flags: vma.Allocation_Create_Flags,
+	vma_flags: vma.AllocationCreateFlags,
 	loc := #caller_location,
 ) -> (
 	handle: Buffer_Id,
@@ -31,13 +31,13 @@ create_buffer :: proc(
 		usage = vk_usage,
 	}
 
-	alloc_create_info := vma.Allocation_Create_Info {
-		usage = .Auto,
+	alloc_create_info := vma.AllocationCreateInfo {
+		usage = .AUTO,
 		flags = vma_flags,
 	}
 
 	vkb.vk_check(
-		vma.create_buffer(
+		vma.CreateBuffer(
 			r.allocator,
 			buffer_create_info,
 			alloc_create_info,
@@ -49,7 +49,7 @@ create_buffer :: proc(
 
 	when ODIN_DEBUG {
 		c_str := strings.clone_to_cstring(name)
-		vma.set_allocation_name(r.allocator, buffer.allocation, c_str)
+		vma.SetAllocationName(r.allocator, buffer.allocation, c_str)
 		delete(c_str)
 	}
 
@@ -58,7 +58,7 @@ create_buffer :: proc(
 			sType  = .BUFFER_DEVICE_ADDRESS_INFO,
 			buffer = buffer.buffer,
 		}
-		buffer.address = vk.GetBufferDeviceAddress(r.device.device, &device_address_info)
+		buffer.address = vk.GetBufferDeviceAddress(r.device.vk_device, &device_address_info)
 	}
 
 	handle = hm.add(&r.shader_resources.buffers, buffer)
@@ -74,7 +74,7 @@ write_to_buffer :: proc(
 	#any_int size: vk.DeviceSize,
 ) {
 	buf := hm.get(&r.shader_resources.buffers, handle)
-	vma.copy_memory_to_allocation(r.allocator, src, buf.allocation, offset, size)
+	vma.CopyMemoryToAllocation(r.allocator, src, buf.allocation, offset, size)
 }
 
 destroy_buffer :: proc(r: ^Renderer, handle: Buffer_Id) {
@@ -85,5 +85,5 @@ destroy_buffer :: proc(r: ^Renderer, handle: Buffer_Id) {
 
 destroy_buffer_unsafe :: proc(r: ^Renderer, buffer: ^GPUBuffer) {
 	// log.debugf("destroying buffer %#v", buffer)
-	vma.destroy_buffer(r.allocator, buffer.buffer, buffer.allocation)
+	vma.DestroyBuffer(r.allocator, buffer.buffer, buffer.allocation)
 }

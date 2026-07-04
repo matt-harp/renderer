@@ -12,7 +12,7 @@ GPUBuffer :: struct {
 	handle:     Buffer_Id,
 	buffer:     vk.Buffer,
 	allocation: vma.Allocation,
-	info:       vma.Allocation_Info,
+	info:       vma.AllocationInfo,
 	address:    Maybe(vk.DeviceAddress),
 	name:       string,
 }
@@ -62,7 +62,7 @@ init_descriptors :: proc(r: ^Renderer) -> (err: Error) {
 		pPoolSizes    = &pool_sizes[0],
 	}
 	vkb.vk_check(
-		vk.CreateDescriptorPool(r.device.device, &pool_info, nil, &r.bindless_pool),
+		vk.CreateDescriptorPool(r.device.vk_device, &pool_info, nil, &r.bindless_pool),
 	) or_return
 
 	flags := [?]vk.DescriptorBindingFlags {
@@ -113,7 +113,7 @@ init_descriptors :: proc(r: ^Renderer) -> (err: Error) {
 		pBindings    = &bindings[0],
 		flags        = {.UPDATE_AFTER_BIND_POOL},
 	}
-	vk.CreateDescriptorSetLayout(r.device.device, &layout_info, nil, &r.bindless_layout)
+	vk.CreateDescriptorSetLayout(r.device.vk_device, &layout_info, nil, &r.bindless_layout)
 
 	alloc_info := vk.DescriptorSetAllocateInfo {
 		sType              = .DESCRIPTOR_SET_ALLOCATE_INFO,
@@ -121,14 +121,14 @@ init_descriptors :: proc(r: ^Renderer) -> (err: Error) {
 		descriptorSetCount = 1,
 		pSetLayouts        = &r.bindless_layout,
 	}
-	vk.AllocateDescriptorSets(r.device.device, &alloc_info, &r.bindless_set)
+	vk.AllocateDescriptorSets(r.device.vk_device, &alloc_info, &r.bindless_set)
 
 	return
 }
 
 destroy_descriptors :: proc(r: ^Renderer) {
-	vk.DestroyDescriptorSetLayout(r.device.device, r.bindless_layout, nil)
-	vk.DestroyDescriptorPool(r.device.device, r.bindless_pool, nil)
+	vk.DestroyDescriptorSetLayout(r.device.vk_device, r.bindless_layout, nil)
+	vk.DestroyDescriptorPool(r.device.vk_device, r.bindless_pool, nil)
 }
 
 destroy_gpu_resources :: proc(r: ^Renderer) {
@@ -145,6 +145,7 @@ destroy_gpu_resources :: proc(r: ^Renderer) {
 		destroy_image_unsafe(r, &e)
 	}
 	for &sampler in r.shader_resources.samplers {
-		vk.DestroySampler(r.device.device, sampler, nil)
+		vk.DestroySampler(r.device.vk_device, sampler, nil)
 	}
 }
+
