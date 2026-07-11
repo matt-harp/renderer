@@ -4,7 +4,7 @@ import "core:log"
 import "core:mem"
 import "gfx"
 import "thirdparty:glTF2"
-import meshopt "thirdparty:odin-meshoptimizer"
+import meshopt "thirdparty:meshopt"
 
 MAX_VERTICES_PER_MESHLET :: 64
 MAX_TRIANGLES_PER_MESHLET :: 124

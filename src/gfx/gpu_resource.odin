@@ -1,7 +1,7 @@
 package gfx
 
 import hm "core:container/handle_map"
-import vma "thirdparty:odin-vma"
+import vma "thirdparty:vma"
 import vk "vendor:vulkan"
 
 import vkb "vkbootstrap"
@@ -148,4 +148,3 @@ destroy_gpu_resources :: proc(r: ^Renderer) {
 		vk.DestroySampler(r.device.vk_device, sampler, nil)
 	}
 }
-

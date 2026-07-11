@@ -1,7 +1,7 @@
 package gfx
 
 import "core:strings"
-import vma "thirdparty:odin-vma"
+import vma "thirdparty:vma"
 import vk "vendor:vulkan"
 
 import hm "core:container/handle_map"
@@ -68,7 +68,7 @@ create_image :: proc(
 			nil,
 		),
 	) or_return
-	
+
 	when ODIN_DEBUG {
 		c_str := strings.clone_to_cstring(name)
 		vma.SetAllocationName(r.allocator, image.allocation, c_str)

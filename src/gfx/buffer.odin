@@ -1,7 +1,7 @@
 package gfx
 
 import "core:strings"
-import vma "thirdparty:odin-vma"
+import vma "thirdparty:vma"
 import vk "vendor:vulkan"
 
 import hm "core:container/handle_map"

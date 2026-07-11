@@ -9,10 +9,10 @@ import glfw "vendor:glfw"
 import vk "vendor:vulkan"
 
 import hm "core:container/handle_map"
-import vma "thirdparty:odin-vma"
+import vma "thirdparty:vma"
 import vkb "vkbootstrap"
 
-MAX_FRAMES_IN_FLIGHT :: 1
+MAX_FRAMES_IN_FLIGHT :: 3
 MINIMUM_API_VERSION :: vk.API_VERSION_1_3
 
 Vma_Error :: union {}
@@ -918,4 +918,3 @@ draw_frame :: proc(r: ^Renderer) -> (err: Error) {
 
 	return
 }
-
