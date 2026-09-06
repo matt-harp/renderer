@@ -20,5 +20,32 @@
 		"cwd": "$ZED_WORKTREE_ROOT",
 		"request": "launch",
 		"stopAtEntry": false
-	}
+	},
+  {
+    "adapter": "CodeLLDB",
+    "label": "package 'src'",
+    "build": {
+      "label": "odin debug build",
+      "command": "odin",
+      "args": [
+        "build",
+        "$ZED_DIRNAME",
+        "-out:debug_build",
+        "-debug"
+      ],
+      "env": {},
+      "cwd": null,
+      "use_new_terminal": false,
+      "allow_concurrent_runs": false,
+      "reveal": "always",
+      "reveal_target": "dock",
+      "hide": "never",
+      "tags": [],
+      "shell": "system",
+      "show_summary": false,
+      "show_command": false,
+      "save": "none",
+      "hooks": []
+    }
+  }
 ]

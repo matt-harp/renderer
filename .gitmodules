@@ -4,3 +4,7 @@
 [submodule "thirdparty/odin-meshoptimizer"]
 	path = thirdparty/meshopt
 	url = git@github.com:matt-harp/odin-meshoptimizer
+[submodule "thirdparty/no_gfx_api"]
+	path = thirdparty/no_gfx_api
+	url = git@github.com:matt-harp/no_gfx_api.git
+	branch = mesh-shaders

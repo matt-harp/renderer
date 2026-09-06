@@ -1,34 +1,91 @@
 package main
 
 import "base:runtime"
-import "core:c"
 import "core:fmt"
 import "core:log"
 import "core:math"
 import "core:math/linalg"
 import "core:mem"
+import "thirdparty:no_gfx_api/gpu"
 
-import "gfx"
+import sdl "vendor:sdl3"
 
-import glfw "vendor:glfw"
-
-Instance :: struct #align (16) {
+Instance :: struct {
 	model_matrix:    matrix[4, 4]f32,
 	meshlet_offset:  u32,
 	meshlet_count:   u32,
-	_:               [2]u32,
 	bounding_sphere: [4]f32, // Not used yet
+	_pad: [8]u8,
 }
 
-// Mouse input state
-last_mouse_x: f64 = 0.0
-last_mouse_y: f64 = 0.0
-mouse_held: bool = false
+Frustum_Plane :: struct {
+	normal: [3]f32,
+	d:      f32,
+}
 
-// Frustum freeze toggle
-prev_f5_down: bool = false
+Start_Window_Size_X :: 1000
+Start_Window_Size_Y :: 1000
+Frames_In_Flight :: 3
 
 camera: Camera
+
+Meshlet :: struct {
+	bounding_sphere: [4]f32,
+	cone_apex:       [3]f32,
+	cone_cutoff:     f32,
+	cone_axis:       [3]f32,
+	vertices_offset: u32, // local meshlet list start
+	triangle_offset: u32, // local meshlet index list start
+	vertices_count:  u32, // max ~64
+	triangle_count:  u32, // max ~128
+}
+
+extract_frustum_planes :: proc(vp: linalg.Matrix4f32) -> [6]Frustum_Plane {
+	planes: [6]Frustum_Plane
+
+	planes[0].normal = {vp[0, 0] + vp[3, 0], vp[0, 1] + vp[3, 1], vp[0, 2] + vp[3, 2]}
+	planes[0].d = vp[0, 3] + vp[3, 3]
+
+	planes[1].normal = {vp[3, 0] - vp[0, 0], vp[3, 1] - vp[0, 1], vp[3, 2] - vp[0, 2]}
+	planes[1].d = vp[3, 3] - vp[0, 3]
+
+	planes[2].normal = {vp[1, 0] + vp[3, 0], vp[1, 1] + vp[3, 1], vp[1, 2] + vp[3, 2]}
+	planes[2].d = vp[1, 3] + vp[3, 3]
+
+	planes[3].normal = {vp[3, 0] - vp[1, 0], vp[3, 1] - vp[1, 1], vp[3, 2] - vp[1, 2]}
+	planes[3].d = vp[3, 3] - vp[1, 3]
+
+	planes[4].normal = {vp[2, 0], vp[2, 1], vp[2, 2]}
+	planes[4].d = vp[2, 3]
+
+	planes[5].normal = {vp[3, 0] - vp[2, 0], vp[3, 1] - vp[2, 1], vp[3, 2] - vp[2, 2]}
+	planes[5].d = vp[3, 3] - vp[2, 3]
+
+	for i in 0 ..< 6 {
+		inv_len := 1.0 / linalg.length(planes[i].normal)
+		planes[i].normal *= inv_len
+		planes[i].d *= inv_len
+	}
+
+	return planes
+}
+
+matrix4_perspective_f32 :: proc "contextless" (
+	fovy, aspect, near, far: f32,
+) -> (
+	m: linalg.Matrix4f32,
+) #no_bounds_check {
+	tan_half_fovy := math.tan(0.5 * fovy)
+	m[0, 0] = 1 / (aspect * tan_half_fovy)
+	m[1, 1] = -1 / (tan_half_fovy) // negated
+	m[2, 2] = (far) / (far - near)
+	m[3, 2] = 1
+	m[2, 3] = -far * near / (far - near)
+
+	m[2] = -m[2]
+
+	return
+}
 
 main :: proc() {
 	when ODIN_DEBUG {
@@ -56,42 +113,36 @@ main :: proc() {
 		}
 	}
 
-	renderer: gfx.Renderer
-	if err := gfx.init_renderer(&renderer); err != nil {
-		log.errorf("Encountered error during renderer init: %v", err)
-		return
+	window_flags :: sdl.WindowFlags{.HIGH_PIXEL_DENSITY, .VULKAN, .RESIZABLE}
+	window := sdl.CreateWindow(
+		"sdl window",
+		Start_Window_Size_X,
+		Start_Window_Size_Y,
+		window_flags,
+	)
+	ensure(window != nil)
+
+	display_scale: f32 = sdl.GetWindowDisplayScale(window)
+
+	window_size_x := i32(Start_Window_Size_X * display_scale)
+	window_size_y := i32(Start_Window_Size_Y * display_scale)
+
+	ok := gpu.init()
+	ensure(ok)
+	defer gpu.cleanup()
+
+	task_shader := gpu.shader_create_mesh(#load("../shaders/shader.task.spv", []u32), .Task, entry_point_name="taskMain")
+	mesh_shader := gpu.shader_create_mesh(#load("../shaders/shader.mesh.spv", []u32), .Mesh, entry_point_name="meshMain")
+	frag_shader := gpu.shader_create_mesh(#load("../shaders/shader.frag.spv", []u32), .Fragment, entry_point_name="fragmentMain")
+	defer {
+		gpu.shader_destroy(task_shader)
+		gpu.shader_destroy(mesh_shader)
+		gpu.shader_destroy(frag_shader)
 	}
-	defer gfx.destroy_renderer(&renderer)
+
+	gpu.swapchain_init_from_sdl(window, Frames_In_Flight)
 
 	camera_init(&camera)
-
-
-	glfw.SetMouseButtonCallback(
-		renderer.window,
-		proc "c" (window: glfw.WindowHandle, button, action, mods: c.int) {
-			if button == glfw.MOUSE_BUTTON_LEFT {
-				mouse_held = (action == glfw.PRESS)
-				// Reset last pos on press to prevent "jumping" when clicking
-				if mouse_held {
-					last_mouse_x, last_mouse_y = glfw.GetCursorPos(window)
-				}
-			}
-		},
-	)
-	glfw.SetCursorPosCallback(
-		renderer.window,
-		proc "c" (window: glfw.WindowHandle, xpos, ypos: f64) {
-			if mouse_held {
-				dx := f32(xpos - last_mouse_x)
-				dy := f32(ypos - last_mouse_y)
-
-				context = runtime.default_context()
-				camera_handle_mouse(&camera, dx, dy)
-			}
-			last_mouse_x = xpos
-			last_mouse_y = ypos
-		},
-	)
 
 	model, model_load_err := load_model_from_file("boulder_01.glb")
 	if !model_load_err {
@@ -100,12 +151,18 @@ main :: proc() {
 	}
 	prim := model.meshes[0].primitives[0]
 
-	instances := make([]Instance, 16)
+	upload_arena := gpu.arena_create()
+	defer gpu.arena_destroy(&upload_arena)
+
+	upload_sem := gpu.semaphore_create()
+	defer gpu.semaphore_destroy(upload_sem)
+
+	instances := gpu.arena_alloc(&upload_arena, Instance, 16)
 	for i := 0; i < 16; i += 1 {
 		x := f32(i % 4) * 2.0 - 3.0
 		y := f32(i / 4) * 2.0 - 3.0
 
-		instances[i] = Instance {
+		instances.cpu[i] = Instance {
 			model_matrix   = linalg.matrix4_translate_f32(
 				{x, y, 0},
 			) * linalg.matrix4_scale_f32({3.0, 3.0, 3.0}),
@@ -114,148 +171,245 @@ main :: proc() {
 		}
 	}
 
-	instance_buffer, _ := gfx.create_buffer(
-		renderer,
-		Instance,
-		"model instances",
-		16,
-		{.SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER},
-		{.HOST_ACCESS_SEQUENTIAL_WRITE, .MAPPED},
-	)
-	gfx.write_to_buffer(
-		renderer,
-		instance_buffer,
-		raw_data(instances),
-		0,
-		size_of(Instance) * len(instances),
-	)
+	mesh_vertex := gpu.arena_alloc(&upload_arena, Vertex, len(prim.vertices))
+	mem.copy(raw_data(mesh_vertex.cpu), raw_data(prim.vertices), len(prim.vertices) * size_of(Vertex))
+	meshlet_metadata := gpu.arena_alloc(&upload_arena, Meshlet, len(prim.meshlets))
+	mem.copy(raw_data(meshlet_metadata.cpu), raw_data(prim.meshlets), len(prim.meshlets) * size_of(Meshlet))
+	meshlet_vertex := gpu.arena_alloc(&upload_arena, u32, len(prim.local_vertices))
+	mem.copy(raw_data(meshlet_vertex.cpu), raw_data(prim.local_vertices), len(prim.local_vertices) * size_of(u32))
+	meshlet_triangle := gpu.arena_alloc(&upload_arena, u8, len(prim.local_triangles))
+	mem.copy(raw_data(meshlet_triangle.cpu), raw_data(prim.local_triangles), len(prim.local_triangles) * size_of(u8))
 
-	vertex_buffer, _ := gfx.create_buffer(
-		renderer,
-		gfx.Meshlet,
-		"mesh vertices",
-		len(prim.vertices),
-		{.SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER},
-		{.HOST_ACCESS_SEQUENTIAL_WRITE, .MAPPED},
-	)
-	gfx.write_to_buffer(
-		renderer,
-		vertex_buffer,
-		raw_data(prim.vertices),
-		0,
-		size_of(Vertex) * len(prim.vertices),
-	)
+	instances_local := gpu.mem_alloc_slice(Instance, 16, .GPU)
+	mesh_vertex_local := gpu.mem_alloc_slice(Vertex, len(prim.vertices), .GPU)
+	meshlet_metadata_local := gpu.mem_alloc_slice(Meshlet, len(prim.meshlets), .GPU)
+	meshlet_vertex_local := gpu.mem_alloc_slice(u32, len(prim.local_vertices), .GPU)
+	meshlet_triangle_local := gpu.mem_alloc_slice(u8, len(prim.local_triangles), .GPU)
 
-	meshlet_metadata, _ := gfx.create_buffer(
-		renderer,
-		gfx.Meshlet,
-		"meshlet metadata",
-		len(prim.meshlets),
-		{.SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER},
-		{.HOST_ACCESS_SEQUENTIAL_WRITE, .MAPPED},
-	)
-	gfx.write_to_buffer(
-		renderer,
-		meshlet_metadata,
-		raw_data(prim.meshlets),
-		0,
-		size_of(gfx.Meshlet) * len(prim.meshlets),
-	)
+	upload_cmd_buf := gpu.commands_begin(.Transfer)
+	gpu.cmd_mem_copy(upload_cmd_buf, instances_local, instances)
+	gpu.cmd_mem_copy(upload_cmd_buf, mesh_vertex_local, mesh_vertex)
+	gpu.cmd_mem_copy(upload_cmd_buf, meshlet_metadata_local, meshlet_metadata)
+	gpu.cmd_mem_copy(upload_cmd_buf, meshlet_vertex_local, meshlet_vertex)
+	gpu.cmd_mem_copy(upload_cmd_buf, meshlet_triangle_local, meshlet_triangle)
+	gpu.cmd_barrier(upload_cmd_buf, .Transfer, .All, {})
+	gpu.cmd_add_signal_semaphore(upload_cmd_buf, upload_sem, 1)
+	gpu.queue_submit(.Transfer, {upload_cmd_buf})
 
-	vertices_buffer, _ := gfx.create_buffer(
-		renderer,
-		u32,
-		"meshlet vertices",
-		len(prim.local_vertices),
-		{.SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER},
-		{.HOST_ACCESS_SEQUENTIAL_WRITE, .MAPPED},
-	)
-	gfx.write_to_buffer(
-		renderer,
-		vertices_buffer,
-		raw_data(prim.local_vertices),
-		0,
-		size_of(u32) * len(prim.local_vertices),
-	)
+	gpu.semaphore_wait(upload_sem, 1)
 
-	index_buffer, _ := gfx.create_buffer(
-		renderer,
-		u8,
-		"meshlet indices",
-		len(prim.local_triangles),
-		{.SHADER_DEVICE_ADDRESS, .STORAGE_BUFFER},
-		{.HOST_ACCESS_SEQUENTIAL_WRITE, .MAPPED},
-	)
-	gfx.write_to_buffer(
-		renderer,
-		index_buffer,
-		raw_data(prim.local_triangles),
-		0,
-		size_of(u8) * len(prim.local_triangles),
-	)
+	last_time := f64(sdl.GetTicks()) / 1000.0
 
-	renderer.mesh_vertex_buffer = vertex_buffer
-	renderer.meshlet_buffer = meshlet_metadata
-	renderer.meshlet_vertex_buffer = vertices_buffer
-	renderer.meshlet_index_buffer = index_buffer
-	renderer.meshlet_count = u32(len(prim.meshlets))
-	renderer.instance_buffer = instance_buffer
-	renderer.instance_count = u32(len(instances))
 
-	gfx.build_scene_data(&renderer)
+	frame_arenas: [Frames_In_Flight]gpu.Arena
+	for &frame_arena in frame_arenas {
+		frame_arena = gpu.arena_create()
+	}
+	defer for &frame_arena in frame_arenas {
+		gpu.arena_destroy(&frame_arena)
+	}
 
-	last_time := glfw.GetTime()
+	Task_Data :: struct {
+		meshlets: rawptr,
+		meshlet_count: u32,
 
-	for !glfw.WindowShouldClose(renderer.window) {
-		width, height := glfw.GetWindowSize(renderer.window)
-		glfw.PollEvents()
-		time := glfw.GetTime()
+		instances: rawptr,
+		instance_count: u32,
+
+		frustum_planes: [6]Frustum_Plane,
+	}
+	log.infof("Task_Data: (%d)", align_of(Task_Data))
+	log.infof("  %d meshlets", offset_of(Task_Data, meshlets))
+	log.infof("  %d meshlet_count", offset_of(Task_Data, meshlet_count))
+	log.infof("  %d instances", offset_of(Task_Data, instances))
+	log.infof("  %d instance_count", offset_of(Task_Data, instance_count))
+	log.infof("  %d frustum_planes", offset_of(Task_Data, frustum_planes))
+	log.infof("Frustum_Plane: (%d)", align_of(Frustum_Plane))
+	log.infof("  %d normal", offset_of(Frustum_Plane, normal))
+	log.infof("  %d d", offset_of(Frustum_Plane, d))
+	log.infof("Meshlet: (%d)", size_of(Meshlet))
+	log.infof("Instance: (%d)", align_of(Instance))
+
+	next_frame := u64(1)
+	frame_sem := gpu.semaphore_create(0)
+	defer gpu.semaphore_destroy(frame_sem)
+
+	input: Input
+	running := true
+	for running {
+		// Reset per-frame transient input state
+		input.mouse_dx = 0
+		input.mouse_dy = 0
+		input.f5_pressed = false
+
+		// Poll SDL events
+		event: sdl.Event
+		for sdl.PollEvent(&event) {
+			#partial switch event.type {
+			case .QUIT:
+				running = false
+			case .KEY_DOWN:
+				#partial switch event.key.scancode {
+				case .W:
+					input.w_down = true
+				case .A:
+					input.a_down = true
+				case .S:
+					input.s_down = true
+				case .D:
+					input.d_down = true
+				case .SPACE:
+					input.space_down = true
+				case .LCTRL, .RCTRL:
+					input.ctrl_down = true
+				case .F5:
+					input.f5_pressed = true
+				}
+			case .KEY_UP:
+				#partial switch event.key.scancode {
+				case .W:
+					input.w_down = false
+				case .A:
+					input.a_down = false
+				case .S:
+					input.s_down = false
+				case .D:
+					input.d_down = false
+				case .SPACE:
+					input.space_down = false
+				case .LCTRL, .RCTRL:
+					input.ctrl_down = false
+				}
+			case .MOUSE_MOTION:
+				input.mouse_dx += event.motion.xrel
+				input.mouse_dy += event.motion.yrel
+			case .MOUSE_BUTTON_DOWN:
+				if event.button.button == sdl.BUTTON_LEFT {
+					input.mouse_held = true
+				}
+			case .MOUSE_BUTTON_UP:
+				if event.button.button == sdl.BUTTON_LEFT {
+					input.mouse_held = false
+				}
+			}
+		}
+
+		old_window_size_x := window_size_x
+		old_window_size_y := window_size_y
+		sdl.GetWindowSizeInPixels(window, &window_size_x, &window_size_y)
+		if .MINIMIZED in sdl.GetWindowFlags(window) || window_size_x <= 0 || window_size_y <= 0 {
+			sdl.Delay(16)
+			continue
+		}
+
+		time := f64(sdl.GetTicks()) / 1000.0
 		delta_time := f32(time - last_time)
 		last_time = time
 
-		camera_update(&camera, renderer.window, delta_time)
+		// Handle mouse look (only when mouse is held)
+		if input.mouse_held {
+			camera_handle_mouse(&camera, input.mouse_dx, input.mouse_dy)
+		}
 
-		f5_down := glfw.GetKey(renderer.window, glfw.KEY_F5) == glfw.PRESS
-		if f5_down && !prev_f5_down {
-			renderer.frustum_frozen = !renderer.frustum_frozen
-			if renderer.frustum_frozen {
+		camera_update(&camera, &input, delta_time)
+
+		// F5 frustum freeze toggle
+		if input.f5_pressed {
+			input.frustum_frozen = !input.frustum_frozen
+			if input.frustum_frozen {
 				view_tmp := camera_get_view_matrix(&camera)
-				aspect := f32(width) / f32(height)
-				proj_tmp := gfx.matrix4_perspective_f32(
+				aspect := f32(window_size_x) / f32(window_size_y)
+				proj_tmp := matrix4_perspective_f32(
 					camera.fov * (math.PI / 180.0),
 					aspect,
 					camera.near,
 					camera.far,
 				)
-				renderer.saved_frustum_planes = gfx.extract_frustum_planes(proj_tmp * view_tmp)
+				input.saved_frustum = extract_frustum_planes(proj_tmp * view_tmp)
 				log.infof("Frustum planes frozen")
 			} else {
 				log.infof("Frustum planes unfrozen")
 			}
 		}
-		prev_f5_down = f5_down
+
+		if next_frame > Frames_In_Flight {
+			gpu.semaphore_wait(frame_sem, next_frame - Frames_In_Flight)
+		}
+		if old_window_size_x != window_size_x || old_window_size_y != window_size_y {
+			gpu.queue_wait_idle(.Main)
+			gpu.swapchain_resize({u32(max(0, window_size_x)), u32(max(0, window_size_y))})
+		}
 
 		view := camera_get_view_matrix(&camera)
-
-		aspect := f32(width) / f32(height)
-
-		proj := gfx.matrix4_perspective_f32(
+		aspect := f32(window_size_x) / f32(window_size_y)
+		proj := matrix4_perspective_f32(
 			camera.fov * (math.PI / 180.0),
 			aspect,
 			camera.near,
 			camera.far,
 		)
 
-		// gfx.model = model
-		gfx.view = view
-		gfx.projection = proj
-		gfx.camera_origin = camera.pos
+		swapchain := gpu.swapchain_acquire_next()
 
-		if draw_err := gfx.draw_frame(&renderer); draw_err != nil {
-			log.errorf("Failed to draw frame: %v", draw_err)
-			break
+		frame_arena := &frame_arenas[next_frame % Frames_In_Flight]
+		gpu.arena_free_all(frame_arena)
+
+		cmd_buf := gpu.commands_begin(.Main)
+
+	 	gpu.cmd_begin_render_pass(cmd_buf, {
+            color_attachments = {
+                { texture = swapchain, clear_color = {1.0, 1.0, 1.0, 1.0} },
+            },
+        })
+
+		gpu.cmd_set_task_shader(cmd_buf, task_shader)
+		gpu.cmd_set_mesh_shaders(cmd_buf, mesh_shader, frag_shader)
+
+
+		task_data := gpu.arena_alloc(frame_arena, Task_Data)
+		planes := extract_frustum_planes(proj * view)
+		task_data.cpu^ = {
+			meshlets = meshlet_metadata_local.gpu.ptr,
+			meshlet_count = u32(len(prim.meshlets)),
+
+			instances = instances_local.gpu.ptr,
+			instance_count = 16,
+
+			frustum_planes = planes
 		}
+
+		Mesh_Data :: struct {
+			view_proj: matrix[4,4]f32,
+
+			instances: rawptr,
+			meshlets: rawptr,
+			indices: rawptr,
+			vertices: rawptr,
+			mesh_vertices: rawptr,
+		}
+		mesh_data := gpu.arena_alloc(frame_arena, Mesh_Data)
+		mesh_data.cpu^ = {
+			instances = instances_local.gpu.ptr,
+			meshlets = meshlet_metadata_local.gpu.ptr,
+			indices = meshlet_triangle_local.gpu.ptr,
+			vertices = meshlet_vertex_local.gpu.ptr,
+			mesh_vertices = mesh_vertex_local.gpu.ptr,
+
+			view_proj = proj * view,
+		}
+
+		num_groups := u32(len(prim.meshlets)) / 32
+		gpu.cmd_draw_meshlets(cmd_buf, task_data.gpu, mesh_data.gpu, gpu.null, num_groups, 1, 1)
+
+		gpu.cmd_end_render_pass(cmd_buf)
+
+		gpu.cmd_add_signal_semaphore(cmd_buf, frame_sem, next_frame)
+		gpu.queue_submit(.Main, { cmd_buf })
+
+		gpu.swapchain_present(.Main, frame_sem, next_frame)
+		next_frame += 1
 	}
 
 	unload_model(model)
+	gpu.wait_idle()
 }

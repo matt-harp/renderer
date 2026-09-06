@@ -28,10 +28,11 @@
               nixd
               premake5
               libcxx
+              sdl3
 
               renderdoc
 
-              #ols
+              ols
             ];
 
             runtimeDependencies = with pkgs; [

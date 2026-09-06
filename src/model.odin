@@ -2,7 +2,6 @@ package main
 
 import "core:log"
 import "core:mem"
-import "gfx"
 import "thirdparty:glTF2"
 import meshopt "thirdparty:meshopt"
 
@@ -25,7 +24,7 @@ Vertex :: struct {
 
 Primitive :: struct {
 	vertices:        []Vertex,
-	meshlets:        []gfx.Meshlet,
+	meshlets:        []Meshlet,
 	local_vertices:  []u32,
 	local_triangles: []u8,
 }
@@ -149,7 +148,7 @@ load_model_from_file :: proc(src: string) -> (model: Model, err: bool) {
 				resize(&meshlet_triangles, last.triangle_offset + last.triangle_count * 3)
 			}
 
-			primitive.meshlets = make([]gfx.Meshlet, len(meshlets))
+			primitive.meshlets = make([]Meshlet, len(meshlets))
 			for meshlet, i in meshlets {
 				bounds := meshopt.meshopt_computeMeshletBounds(
 					&meshlet_vertices[meshlet.vertex_offset],
@@ -159,7 +158,7 @@ load_model_from_file :: proc(src: string) -> (model: Model, err: bool) {
 					vertex_count,
 					size_of([3]f32),
 				)
-				primitive.meshlets[i] = gfx.Meshlet {
+				primitive.meshlets[i] = Meshlet {
 					bounding_sphere = {
 						bounds.center[0],
 						bounds.center[1],
@@ -170,9 +169,9 @@ load_model_from_file :: proc(src: string) -> (model: Model, err: bool) {
 					cone_cutoff     = bounds.cone_cutoff,
 					cone_axis       = bounds.cone_axis,
 					vertices_offset = meshlet.vertex_offset,
-					vertices_count  = u16(meshlet.vertex_count),
+					vertices_count  = meshlet.vertex_count,
 					triangle_offset = meshlet.triangle_offset,
-					triangle_count  = u16(meshlet.triangle_count),
+					triangle_count  = meshlet.triangle_count,
 				}
 			}
 
@@ -197,4 +196,3 @@ unload_model :: proc(model: Model) {
 	}
 	delete(model.meshes)
 }
-

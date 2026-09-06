@@ -1,83 +1,189 @@
-module common;
+module shared;
 
-[vk::binding(0, 0)] SamplerState Samplers[];
-[vk::binding(1, 0)] __DynamicResource vk__TextureHeap[];
-[vk::binding(2, 0)] __DynamicResource vk__BufferHeap[];
-[vk::binding(3, 0)] __DynamicResource vk__RWTextureHeap[];
+#define TEXTURE_HEAP_BINDING 0
+#define RWTEXTURE_HEAP_BINDING 1
+#define SAMPLER_HEAP_BINDING 2
+#define BVH_HEAP_BINDING 3
 
-interface IImageDescriptor {
-    static const bool isWriteable;
+#pragma warning(disable: 39001)
+
+[[vk::binding(0, TEXTURE_HEAP_BINDING)]] public Texture2D texture2DHeap[];
+[[vk::binding(0, TEXTURE_HEAP_BINDING)]] public Texture1D texture1DHeap[];
+[[vk::binding(0, TEXTURE_HEAP_BINDING)]] public Texture3D texture3DHeap[];
+[[vk::binding(0, TEXTURE_HEAP_BINDING)]] public TextureCube textureCubeHeap[];
+[[vk::binding(0, TEXTURE_HEAP_BINDING)]] public Texture2DArray texture2DArrayHeap[];
+[[vk::binding(0, TEXTURE_HEAP_BINDING)]] public TextureCubeArray textureCubeArrayHeap[];
+[[vk::binding(0, TEXTURE_HEAP_BINDING)]] public Texture1DArray texture1DArrayHeap[];
+
+[[vk::binding(0, RWTEXTURE_HEAP_BINDING)]] public RWTexture2D<float4> texture2DHeapRW[];
+[[vk::binding(0, RWTEXTURE_HEAP_BINDING)]] public RWTexture1D<float4> texture1DHeapRW[];
+[[vk::binding(0, RWTEXTURE_HEAP_BINDING)]] public RWTexture3D<float4> texture3DHeapRW[];
+[[vk::binding(0, RWTEXTURE_HEAP_BINDING)]] public RWTexture2DArray<float4> texture2DArrayHeapRW[];
+[[vk::binding(0, RWTEXTURE_HEAP_BINDING)]] public RWTexture1DArray<float4> texture1DArrayHeapRW[];
+
+[[vk::binding(0, SAMPLER_HEAP_BINDING)]] public SamplerState samplerHeap[];
+[[vk::binding(0, BVH_HEAP_BINDING)]] RaytracingAccelerationStructure bvhHeap[];
+
+// Push constant blocks - different structures for graphics vs compute shaders
+public struct __PushConstants_Graphics
+{
+    public uint64_t vertData;
+    public uint64_t fragData;
+    public uint64_t indirectData;
 };
 
-__generic<E : ITexelElement, Shape : __ITextureShape, int isArray, int isMS, int sampleCount, int access, int isShadow, int format>
-extension _Texture<E, Shape, isArray, isMS, sampleCount, access, isShadow, 0, format> : IImageDescriptor {
-    static const bool isWriteable = access == 1;
+public struct __PushConstants_Compute
+{
+    public uint64_t computeData;
 };
 
-public struct ImageHandle<T : IImageDescriptor & __IDynamicResourceCastable> {
-    uint DescriptorIndex;
+// public struct __PushConstants_Mesh
+// {
+//     public uint64_t taskData;
+//     public uint64_t meshletData;
+//     public uint64_t fragData;
+// };
 
-    public property bool IsNull { get { return DescriptorIndex == 0; } }
+[[vk::push_constant]] __PushConstants_Graphics __push_graphics;
+[[vk::push_constant]] __PushConstants_Compute __push_compute;
+// [[vk::push_constant]] __PushConstants_Mesh __push_mesh;
 
-    public property T Instance {
+// Standard Vulkan indirect draw command structure
+public struct DrawIndexedIndirectCommand
+{
+    uint indexCount;
+    uint instanceCount;
+    uint firstIndex;
+    int  vertexOffset;
+    uint firstInstance;
+};
+
+struct __DrawCommand<TUserData>
+{
+    DrawIndexedIndirectCommand cmd;
+    TUserData data;
+};
+
+in int draw_id : SV_DrawIndex;
+
+public struct GraphicsPipelineData<TVertexData = void, TFragmentData = void, TDrawData = void> {
+    public property vert : TVertexData* {
         [ForceInline]
-        get { return (T.isWriteable ? vk__RWTextureHeap : vk__TextureHeap)[DescriptorIndex].as<T>(); }
+        get { return (TVertexData*)__push_graphics.vertData; }
     }
-    public property T NonUniformInstance {
+
+    public property frag : TFragmentData* {
         [ForceInline]
-        get { return (T.isWriteable ? vk__RWTextureHeap : vk__TextureHeap)[NonUniformResourceIndex(DescriptorIndex)].as<T>(); }
+        get { return (TFragmentData*)__push_graphics.fragData; }
+    }
+
+    public property drawData : TDrawData {
+        [ForceInline]
+        get { 
+            __DrawCommand<TDrawData>* buffer = (__DrawCommand<TDrawData>*)__push_graphics.indirectData;
+            return buffer[draw_id].data; 
+        }
+    }
+
+    public property drawCmd : DrawIndexedIndirectCommand {
+        [ForceInline]
+        get { 
+            __DrawCommand<TDrawData>* buffer = (__DrawCommand<TDrawData>*)__push_graphics.indirectData;
+            return buffer[draw_id].cmd; 
+        }
     }
 }
 
-__generic<E : ITexelElement, Shape : __ITextureShape, let format : int>
-public extension ImageHandle<_Texture<E, Shape, 0, 0, 0, 1, 0, 0, format>> {
-    typealias TextureType = _Texture<E, Shape, 0, 0, 0, 1, 0, 0, format>;
-
-    [ForceInline]
-    public E Load(vector<uint, Shape.dimensions> pos) {
-        return Instance[pos];
-    }
-    [ForceInline]
-    public void Store(vector<uint, Shape.dimensions> pos, E value) {
-        Instance[pos] = value;
+public struct ComputePipelineData<TData = void> {
+    public property data : TData* {
+        [ForceInline]
+        get { return (TData*)__push_compute.computeData; }
     }
 }
 
-public typealias TextureHandle2D<F: ITexelElement = float4> = ImageHandle<Texture2D<F>>;
-public typealias TextureHandle3D<F: ITexelElement = float4> = ImageHandle<Texture3D<F>>;
-public typealias ImageHandle2D<F: ITexelElement = float4> = ImageHandle<RWTexture2D<F>>;
-public typealias ImageHandle3D<F: ITexelElement = float4> = ImageHandle<RWTexture3D<F>>;
+// public struct MeshPipelineData<TTaskData = void, TMeshletData = void, TFragmentData = void> {
+//     public property task : TTaskData* {
+//         [ForceInline]
+//         get { return (TTaskData*)__push_mesh.taskData; }
+//     }
 
-public typealias RWTextureCube<F: ITexelElement = float4> = _Texture<F, __ShapeCube, 0, 0, 0, 1, 0, 0, 0>;
+//     public property meshlet : TMeshletData* {
+//         [ForceInline]
+//         get { return (TMeshletData*)__push_mesh.meshletData; }
+//     }
 
-public typealias TextureHandleCube<F: ITexelElement = float4> = ImageHandle<TextureCube<F>>;
-public typealias ImageHandleCube<F: ITexelElement = float4> = ImageHandle<RWTextureCube<F>>;
+//     public property frag : TFragmentData* {
+//         [ForceInline]
+//         get { return (TFragmentData*)__push_mesh.fragData; }
+//     }
+// }
 
-public typealias ImageHandleArray2D<F: ITexelElement = float4> = ImageHandle<RWTexture2DArray<F>>;
+public SamplerState getSampler(uint samplerIndex) 
+{
+    return samplerHeap[NonUniformResourceIndex(samplerIndex)];
+}
 
-#define DESTRUCT_VEC1(var) var.x
-#define DESTRUCT_VEC2(var) var.x, var.y
-#define DESTRUCT_VEC3(var) var.x, var.y, var.z
+public Texture2D getTexture2D(uint textureIndex)
+{
+    return texture2DHeap[NonUniformResourceIndex(textureIndex)];
+}
 
-#define DEF_TEXTURE_SIZE_EXT(shape, isArray, dim) \
-    __generic<T: ITexelElement, let access : int, let isShadow : int, let isCombined : int, let format : int> \
-    public extension _Texture<T, shape, isArray, 0, 0, access, isShadow, isCombined, format> { \
-        public property uint##dim Size { \
-            get { \
-                uint##dim res; \
-                GetDimensions(DESTRUCT_VEC##dim(res)); \
-                return res; \
-            } \
-        } \
-    }
+public Texture3D getTexture3D(uint textureIndex)
+{
+    return texture3DHeap[NonUniformResourceIndex(textureIndex)];
+}
 
-DEF_TEXTURE_SIZE_EXT(__Shape2D, 0, 2);
-DEF_TEXTURE_SIZE_EXT(__Shape2D, 1, 3);
-DEF_TEXTURE_SIZE_EXT(__Shape3D, 0, 3);
+public Texture1D getTexture1D(uint textureIndex)
+{
+    return texture1DHeap[NonUniformResourceIndex(textureIndex)];
+}
 
-DEF_TEXTURE_SIZE_EXT(__ShapeCube, 0, 2);
+public TextureCube getTextureCube(uint textureIndex)
+{
+    return textureCubeHeap[NonUniformResourceIndex(textureIndex)];
+}
 
-public property SamplerState LinearRepeat { get { return Samplers[0]; } }
-public property SamplerState LinearClamp { get { return Samplers[1]; } }
-public property SamplerState NearestRepeat { get { return Samplers[2]; } }
-public property SamplerState NearestClamp { get { return Samplers[3]; } }
+public Texture2DArray getTexture2DArray(uint textureIndex)
+{
+    return texture2DArrayHeap[NonUniformResourceIndex(textureIndex)];
+}
+
+public TextureCubeArray getTextureCubeArray(uint textureIndex)
+{
+    return textureCubeArrayHeap[NonUniformResourceIndex(textureIndex)];
+}
+
+public Texture1DArray getTexture1DArray(uint textureIndex)
+{
+    return texture1DArrayHeap[NonUniformResourceIndex(textureIndex)];
+}
+
+public RWTexture2D<float4> getTexture2DRW(uint textureIndex)
+{
+    return texture2DHeapRW[NonUniformResourceIndex(textureIndex)];
+}
+
+public RWTexture1D<float4> getTexture1DRW(uint textureIndex)
+{
+    return texture1DHeapRW[NonUniformResourceIndex(textureIndex)];
+}
+
+public RWTexture3D<float4> getTexture3DRW(uint textureIndex)
+{
+    return texture3DHeapRW[NonUniformResourceIndex(textureIndex)];
+}
+
+public RWTexture2DArray<float4> getTexture2DArrayRW(uint textureIndex)
+{
+    return texture2DArrayHeapRW[NonUniformResourceIndex(textureIndex)];
+}
+
+public RWTexture1DArray<float4> getTexture1DArrayRW(uint textureIndex)
+{
+    return texture1DArrayHeapRW[NonUniformResourceIndex(textureIndex)];
+}
+
+public RaytracingAccelerationStructure getBVH(uint bvhIndex)
+{
+    return bvhHeap[NonUniformResourceIndex(bvhIndex)];
+}
