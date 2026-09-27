@@ -10,12 +10,14 @@ import "thirdparty:no_gfx_api/gpu"
 
 import sdl "vendor:sdl3"
 
+GROUP_SIZE :: 32
+
 Instance :: struct {
 	model_matrix:    matrix[4, 4]f32,
 	meshlet_offset:  u32,
 	meshlet_count:   u32,
 	bounding_sphere: [4]f32, // Not used yet
-	_pad: [8]u8,
+	_pad:            [8]u8,
 }
 
 Frustum_Plane :: struct {
@@ -131,9 +133,21 @@ main :: proc() {
 	ensure(ok)
 	defer gpu.cleanup()
 
-	task_shader := gpu.shader_create_mesh(#load("../shaders/shader.task.spv", []u32), .Task, entry_point_name="taskMain")
-	mesh_shader := gpu.shader_create_mesh(#load("../shaders/shader.mesh.spv", []u32), .Mesh, entry_point_name="meshMain")
-	frag_shader := gpu.shader_create_mesh(#load("../shaders/shader.frag.spv", []u32), .Fragment, entry_point_name="fragmentMain")
+	task_shader := gpu.shader_create_mesh(
+		#load("../shaders/shader.task.spv", []u32),
+		.Task,
+		entry_point_name = "taskMain",
+	)
+	mesh_shader := gpu.shader_create_mesh(
+		#load("../shaders/shader.mesh.spv", []u32),
+		.Mesh,
+		entry_point_name = "meshMain",
+	)
+	frag_shader := gpu.shader_create_mesh(
+		#load("../shaders/shader.frag.spv", []u32),
+		.Fragment,
+		entry_point_name = "fragmentMain",
+	)
 	defer {
 		gpu.shader_destroy(task_shader)
 		gpu.shader_destroy(mesh_shader)
@@ -141,6 +155,15 @@ main :: proc() {
 	}
 
 	gpu.swapchain_init_from_sdl(window, Frames_In_Flight)
+
+	depth_desc := gpu.Texture_Desc {
+		type       = .D2,
+		dimensions = {u32(window_size_x), u32(window_size_y), 1},
+		mip_count  = 1,
+		format     = .D32_Float,
+		usage      = {.Depth_Stencil_Attachment},
+	}
+	depth_tex := gpu.texture_alloc_and_create(depth_desc)
 
 	camera_init(&camera)
 
@@ -157,6 +180,7 @@ main :: proc() {
 	upload_sem := gpu.semaphore_create()
 	defer gpu.semaphore_destroy(upload_sem)
 
+	total_meshlets := 0
 	instances := gpu.arena_alloc(&upload_arena, Instance, 16)
 	for i := 0; i < 16; i += 1 {
 		x := f32(i % 4) * 2.0 - 3.0
@@ -165,22 +189,53 @@ main :: proc() {
 		instances.cpu[i] = Instance {
 			model_matrix   = linalg.matrix4_translate_f32(
 				{x, y, 0},
-			) * linalg.matrix4_scale_f32({3.0, 3.0, 3.0}),
+			) * linalg.matrix4_scale_f32({1.0, 1.0, 1.0}),
 			meshlet_offset = 0,
 			meshlet_count  = u32(len(prim.meshlets)),
+		}
+
+		total_meshlets += len(prim.meshlets)
+	}
+
+	instance_map := gpu.arena_alloc(&upload_arena, u32, total_meshlets)
+	meshlet_map := gpu.arena_alloc(&upload_arena, u32, total_meshlets)
+	count := u32(0)
+	for i := 0; i < 16; i += 1 {
+		for j := 0; j < int(instances.cpu[i].meshlet_count); j += 1 {
+			instance_map.cpu[count] = u32(i) // which instance?
+			meshlet_map.cpu[count] = u32(j) // which meshlet in this instance?
+			count += 1
 		}
 	}
 
 	mesh_vertex := gpu.arena_alloc(&upload_arena, Vertex, len(prim.vertices))
-	mem.copy(raw_data(mesh_vertex.cpu), raw_data(prim.vertices), len(prim.vertices) * size_of(Vertex))
+	mem.copy(
+		raw_data(mesh_vertex.cpu),
+		raw_data(prim.vertices),
+		len(prim.vertices) * size_of(Vertex),
+	)
 	meshlet_metadata := gpu.arena_alloc(&upload_arena, Meshlet, len(prim.meshlets))
-	mem.copy(raw_data(meshlet_metadata.cpu), raw_data(prim.meshlets), len(prim.meshlets) * size_of(Meshlet))
+	mem.copy(
+		raw_data(meshlet_metadata.cpu),
+		raw_data(prim.meshlets),
+		len(prim.meshlets) * size_of(Meshlet),
+	)
 	meshlet_vertex := gpu.arena_alloc(&upload_arena, u32, len(prim.local_vertices))
-	mem.copy(raw_data(meshlet_vertex.cpu), raw_data(prim.local_vertices), len(prim.local_vertices) * size_of(u32))
+	mem.copy(
+		raw_data(meshlet_vertex.cpu),
+		raw_data(prim.local_vertices),
+		len(prim.local_vertices) * size_of(u32),
+	)
 	meshlet_triangle := gpu.arena_alloc(&upload_arena, u8, len(prim.local_triangles))
-	mem.copy(raw_data(meshlet_triangle.cpu), raw_data(prim.local_triangles), len(prim.local_triangles) * size_of(u8))
+	mem.copy(
+		raw_data(meshlet_triangle.cpu),
+		raw_data(prim.local_triangles),
+		len(prim.local_triangles) * size_of(u8),
+	)
 
 	instances_local := gpu.mem_alloc_slice(Instance, 16, .GPU)
+	instance_map_local := gpu.mem_alloc_slice(u32, total_meshlets, .GPU)
+	meshlet_map_local := gpu.mem_alloc_slice(u32, total_meshlets, .GPU)
 	mesh_vertex_local := gpu.mem_alloc_slice(Vertex, len(prim.vertices), .GPU)
 	meshlet_metadata_local := gpu.mem_alloc_slice(Meshlet, len(prim.meshlets), .GPU)
 	meshlet_vertex_local := gpu.mem_alloc_slice(u32, len(prim.local_vertices), .GPU)
@@ -188,6 +243,8 @@ main :: proc() {
 
 	upload_cmd_buf := gpu.commands_begin(.Transfer)
 	gpu.cmd_mem_copy(upload_cmd_buf, instances_local, instances)
+	gpu.cmd_mem_copy(upload_cmd_buf, instance_map_local, instance_map)
+	gpu.cmd_mem_copy(upload_cmd_buf, meshlet_map_local, meshlet_map)
 	gpu.cmd_mem_copy(upload_cmd_buf, mesh_vertex_local, mesh_vertex)
 	gpu.cmd_mem_copy(upload_cmd_buf, meshlet_metadata_local, meshlet_metadata)
 	gpu.cmd_mem_copy(upload_cmd_buf, meshlet_vertex_local, meshlet_vertex)
@@ -200,6 +257,9 @@ main :: proc() {
 
 	last_time := f64(sdl.GetTicks()) / 1000.0
 
+	fps_frame_count := 0
+	fps_elapsed := 0.0
+
 
 	frame_arenas: [Frames_In_Flight]gpu.Arena
 	for &frame_arena in frame_arenas {
@@ -208,27 +268,6 @@ main :: proc() {
 	defer for &frame_arena in frame_arenas {
 		gpu.arena_destroy(&frame_arena)
 	}
-
-	Task_Data :: struct {
-		meshlets: rawptr,
-		meshlet_count: u32,
-
-		instances: rawptr,
-		instance_count: u32,
-
-		frustum_planes: [6]Frustum_Plane,
-	}
-	log.infof("Task_Data: (%d)", align_of(Task_Data))
-	log.infof("  %d meshlets", offset_of(Task_Data, meshlets))
-	log.infof("  %d meshlet_count", offset_of(Task_Data, meshlet_count))
-	log.infof("  %d instances", offset_of(Task_Data, instances))
-	log.infof("  %d instance_count", offset_of(Task_Data, instance_count))
-	log.infof("  %d frustum_planes", offset_of(Task_Data, frustum_planes))
-	log.infof("Frustum_Plane: (%d)", align_of(Frustum_Plane))
-	log.infof("  %d normal", offset_of(Frustum_Plane, normal))
-	log.infof("  %d d", offset_of(Frustum_Plane, d))
-	log.infof("Meshlet: (%d)", size_of(Meshlet))
-	log.infof("Instance: (%d)", align_of(Instance))
 
 	next_frame := u64(1)
 	frame_sem := gpu.semaphore_create(0)
@@ -306,6 +345,14 @@ main :: proc() {
 		delta_time := f32(time - last_time)
 		last_time = time
 
+		fps_frame_count += 1
+		fps_elapsed += f64(delta_time)
+		if fps_elapsed >= 1.0 {
+			log.infof("FPS: %.1f", f64(fps_frame_count) / fps_elapsed)
+			fps_frame_count = 0
+			fps_elapsed = 0.0
+		}
+
 		// Handle mouse look (only when mouse is held)
 		if input.mouse_held {
 			camera_handle_mouse(&camera, input.mouse_dx, input.mouse_dy)
@@ -338,6 +385,14 @@ main :: proc() {
 		if old_window_size_x != window_size_x || old_window_size_y != window_size_y {
 			gpu.queue_wait_idle(.Main)
 			gpu.swapchain_resize({u32(max(0, window_size_x)), u32(max(0, window_size_y))})
+			gpu.texture_free_and_destroy(&depth_tex)
+			depth_tex = gpu.texture_alloc_and_create({
+				type = .D2,
+				dimensions = {u32(window_size_x), u32(window_size_y), 1},
+				mip_count = 1,
+				format = .D32_Float,
+				usage = {.Depth_Stencil_Attachment}
+			})
 		}
 
 		view := camera_get_view_matrix(&camera)
@@ -356,55 +411,82 @@ main :: proc() {
 
 		cmd_buf := gpu.commands_begin(.Main)
 
-	 	gpu.cmd_begin_render_pass(cmd_buf, {
-            color_attachments = {
-                { texture = swapchain, clear_color = {1.0, 1.0, 1.0, 1.0} },
-            },
-        })
+		gpu.cmd_begin_render_pass(
+			cmd_buf,
+			{
+				color_attachments = {{texture = swapchain, clear_color = {1.0, 1.0, 1.0, 1.0}}},
+				depth_attachment = gpu.Render_Attachment {
+					texture = depth_tex.tex,
+					load_op = .Clear,
+					store_op = .Store,
+					clear_color = {1.0, 0, 0, 0},
+				},
+			},
+		)
 
 		gpu.cmd_set_task_shader(cmd_buf, task_shader)
 		gpu.cmd_set_mesh_shaders(cmd_buf, mesh_shader, frag_shader)
 
-
+		Task_Data :: struct {
+			meshlets:       rawptr,
+			meshlet_count:  u32,
+			instances:      rawptr,
+			instance_map:   rawptr,
+			meshlet_map:    rawptr,
+			instance_count: u32,
+			camera_pos:     [3]f32,
+			frustum_planes: [6]Frustum_Plane,
+		}
 		task_data := gpu.arena_alloc(frame_arena, Task_Data)
 		planes := extract_frustum_planes(proj * view)
+		if input.frustum_frozen {
+			planes = input.saved_frustum
+		}
 		task_data.cpu^ = {
-			meshlets = meshlet_metadata_local.gpu.ptr,
-			meshlet_count = u32(len(prim.meshlets)),
-
-			instances = instances_local.gpu.ptr,
-			instance_count = 16,
-
-			frustum_planes = planes
+			meshlets       = meshlet_metadata_local.gpu.ptr,
+			meshlet_count  = u32(total_meshlets),
+			instances      = instances_local.gpu.ptr,
+			instance_map   = instance_map_local.gpu.ptr,
+			meshlet_map    = meshlet_map_local.gpu.ptr,
+			instance_count = u32(len(instances.cpu)),
+			camera_pos     = camera.pos,
+			frustum_planes = planes,
 		}
 
 		Mesh_Data :: struct {
-			view_proj: matrix[4,4]f32,
-
-			instances: rawptr,
-			meshlets: rawptr,
-			indices: rawptr,
-			vertices: rawptr,
+			view_proj:     matrix[4, 4]f32,
+			instances:     rawptr,
+			meshlets:      rawptr,
+			indices:       rawptr,
+			vertices:      rawptr,
 			mesh_vertices: rawptr,
 		}
 		mesh_data := gpu.arena_alloc(frame_arena, Mesh_Data)
 		mesh_data.cpu^ = {
-			instances = instances_local.gpu.ptr,
-			meshlets = meshlet_metadata_local.gpu.ptr,
-			indices = meshlet_triangle_local.gpu.ptr,
-			vertices = meshlet_vertex_local.gpu.ptr,
+			instances     = instances_local.gpu.ptr,
+			meshlets      = meshlet_metadata_local.gpu.ptr,
+			indices       = meshlet_triangle_local.gpu.ptr,
+			vertices      = meshlet_vertex_local.gpu.ptr,
 			mesh_vertices = mesh_vertex_local.gpu.ptr,
-
-			view_proj = proj * view,
+			view_proj     = proj * view,
 		}
 
-		num_groups := u32(len(prim.meshlets)) / 32
-		gpu.cmd_draw_meshlets(cmd_buf, task_data.gpu, mesh_data.gpu, gpu.null, num_groups, 1, 1)
+		num_groups := (total_meshlets + GROUP_SIZE - 1) / GROUP_SIZE
+		gpu.cmd_set_depth_state(cmd_buf, {mode = {.Read, .Write}, compare = .Less})
+		gpu.cmd_draw_meshlets(
+			cmd_buf,
+			task_data.gpu,
+			mesh_data.gpu,
+			gpu.null,
+			u32(num_groups),
+			1,
+			1,
+		)
 
 		gpu.cmd_end_render_pass(cmd_buf)
 
 		gpu.cmd_add_signal_semaphore(cmd_buf, frame_sem, next_frame)
-		gpu.queue_submit(.Main, { cmd_buf })
+		gpu.queue_submit(.Main, {cmd_buf})
 
 		gpu.swapchain_present(.Main, frame_sem, next_frame)
 		next_frame += 1
